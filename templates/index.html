@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Minecraft Server Dashboard</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: #12151c; color: #e6e9ef; }
+  header { padding: 16px 24px; background: #0d1017; border-bottom: 1px solid #262c39; }
+  header h1 { margin: 0; font-size: 18px; }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px 24px; max-width: 1400px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .card { background: #171b24; border: 1px solid #262c39; border-radius: 10px; padding: 16px; }
+  .card h2 { margin: 0 0 12px; font-size: 15px; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .offline { background: #3a2226; color: #ff8a8a; }
+  .starting, .stopping { background: #3a3422; color: #ffd479; }
+  .online { background: #223a2a; color: #7ee2a0; }
+  button { background: #2b6cb0; color: #fff; border: 0; border-radius: 6px; padding: 7px 12px; cursor: pointer; font: inherit; }
+  button:hover { background: #3182ce; }
+  button.danger { background: #b03b3b; } button.danger:hover { background: #d14545; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  select, input { background: #0f131a; color: #e6e9ef; border: 1px solid #2b3342; border-radius: 6px; padding: 6px 8px; font: inherit; }
+  .server-row { display: flex; gap: 8px; align-items: center; padding: 8px 0; border-top: 1px solid #21283400; }
+  .server-row + .server-row { border-top: 1px solid #212834; }
+  .server-row .name { flex: 1; font-weight: 600; }
+  table.kv { width: 100%; border-collapse: collapse; }
+  table.kv td { padding: 3px 0; vertical-align: top; }
+  table.kv td.k { color: #93a0b5; width: 110px; }
+  pre.log { background: #0b0e14; border: 1px solid #212834; border-radius: 6px; padding: 10px; height: 240px; overflow: auto; margin: 10px 0 0; white-space: pre-wrap; font: 12px/1.45 ui-monospace, monospace; }
+  .row { display: flex; gap: 8px; margin-top: 8px; }
+  .row > input { flex: 1; }
+  form.settings { display: grid; grid-template-columns: 120px 1fr; gap: 8px 10px; align-items: center; }
+  form.settings label { color: #93a0b5; }
+  .muted { color: #93a0b5; font-size: 12px; }
+</style>
+</head>
+<body>
+<header><h1>Minecraft Server Dashboard</h1></header>
+<main>
+  <section class="card" id="server-card">
+    <h2>Servers</h2>
+    <div id="server-list"></div>
+    <div id="status-panel" style="margin-top:14px"></div>
+    <pre class="log" id="server-log">No server running.</pre>
+    <div class="row">
+      <input id="cmd" placeholder="Console command (e.g. say hello)" disabled>
+      <button id="cmd-send" disabled>Send</button>
+    </div>
+  </section>
+
+  <section class="card" id="bot-card">
+    <h2>Discord Bot <span id="bot-badge" class="badge offline">stopped</span></h2>
+    <form class="settings" id="bot-form">
+      <label>Channel ID</label><input name="CHANNEL_ID">
+      <label>MC host</label><input name="MC_HOST">
+      <label>MC port</label><input name="MC_PORT">
+      <label>Poll interval (s)</label><input name="POLL_INTERVAL">
+      <label>Guild ID</label><input name="GUILD_ID">
+      <label>Token</label><span class="muted" id="token-state">—</span>
+    </form>
+    <div class="row">
+      <button id="bot-save">Save settings</button>
+      <button id="bot-start">Start bot</button>
+      <button id="bot-stop" class="danger">Stop bot</button>
+    </div>
+    <pre class="log" id="bot-log">Bot not running.</pre>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const api = (u, body) => fetch(u, body ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)} : {}).then(r => r.json());
+
+let running = null;      // name of running server, or null
+let selectedScript = {}; // per-server chosen script
+
+async function refreshServers() {
+  const { servers, running: run } = await api('/api/servers');
+  running = run;
+  const list = $('#server-list');
+  list.innerHTML = '';
+  for (const s of servers) {
+    const row = document.createElement('div');
+    row.className = 'server-row';
+    const sel = servers.length ? s.scripts.map(x => `<option>${x}</option>`).join('') : '';
+    const isRunning = run === s.name;
+    const disableStart = run !== null;
+    row.innerHTML = `
+      <span class="name">${s.name}</span>
+      <select ${isRunning || !s.scripts.length ? 'disabled' : ''} data-name="${s.name}">${sel}</select>
+      <button data-start="${s.name}" ${disableStart || !s.scripts.length ? 'disabled' : ''}>Start</button>`;
+    list.appendChild(row);
+  }
+  list.querySelectorAll('select').forEach(el => {
+    if (selectedScript[el.dataset.name]) el.value = selectedScript[el.dataset.name];
+    el.onchange = () => selectedScript[el.dataset.name] = el.value;
+  });
+  list.querySelectorAll('button[data-start]').forEach(el => {
+    el.onclick = async () => {
+      const name = el.dataset.start;
+      const sel = list.querySelector(`select[data-name="${name}"]`);
+      const res = await api('/api/server/start', { name, script: sel.value });
+      if (res.error) alert(res.error);
+      refreshServers(); refreshStatus();
+    };
+  });
+}
+
+function statusPanel(d) {
+  if (d.state === 'offline') return '<span class="badge offline">offline</span>';
+  const m = d.metrics || {};
+  const p = d.players;
+  const badge = `<span class="badge ${d.state}">${d.state}</span>`;
+  const rows = [
+    ['', badge + `  <button class="danger" id="stop-btn">Stop</button>`],
+    ['Server', d.name || ''],
+    ['Address', d.address || ''],
+    ['Uptime', d.uptime || ''],
+    ['Version', d.version || '—'],
+    ['MOTD', d.motd || '—'],
+    ['Players', p ? `${p.online}/${p.max}${p.names && p.names.length ? ' — ' + p.names.join(', ') : ''}` : '—'],
+    ['CPU / RAM', `${m.cpu ?? 0}%  /  ${m.mem_mb ?? 0} MB`],
+  ];
+  return `<table class="kv">${rows.map(([k,v]) => `<tr><td class="k">${k}</td><td>${v}</td></tr>`).join('')}</table>`;
+}
+
+async function refreshStatus() {
+  const d = await api('/api/server/status');
+  $('#status-panel').innerHTML = statusPanel(d);
+  const log = $('#server-log');
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+  log.textContent = (d.log && d.log.length) ? d.log.join('\n') : (d.state === 'offline' ? 'No server running.' : '(waiting for output)');
+  if (atBottom) log.scrollTop = log.scrollHeight;
+  const active = d.state !== 'offline';
+  $('#cmd').disabled = !active; $('#cmd-send').disabled = !active;
+  const stopBtn = $('#stop-btn');
+  if (stopBtn) stopBtn.onclick = async () => { await api('/api/server/stop', {}); refreshStatus(); };
+}
+
+$('#cmd-send').onclick = sendCmd;
+$('#cmd').addEventListener('keydown', e => { if (e.key === 'Enter') sendCmd(); });
+async function sendCmd() {
+  const cmd = $('#cmd').value.trim();
+  if (!cmd) return;
+  const res = await api('/api/server/command', { cmd });
+  if (res.error) alert(res.error); else $('#cmd').value = '';
+  refreshStatus();
+}
+
+let botFormDirty = false;
+$('#bot-form').addEventListener('input', () => botFormDirty = true);
+
+async function refreshBot() {
+  const d = await api('/api/bot');
+  const badge = $('#bot-badge');
+  badge.textContent = d.running ? 'running' : 'stopped';
+  badge.className = 'badge ' + (d.running ? 'online' : 'offline');
+  if (!botFormDirty) {
+    const s = d.settings;
+    for (const k of ['CHANNEL_ID','MC_HOST','MC_PORT','POLL_INTERVAL','GUILD_ID'])
+      $(`#bot-form [name="${k}"]`).value = s[k] ?? '';
+    $('#token-state').textContent = s.DISCORD_TOKEN_set ? 'set (hidden)' : 'NOT set — add DISCORD_TOKEN to the bot .env';
+  }
+  $('#bot-start').disabled = d.running;
+  $('#bot-stop').disabled = !d.running;
+  const log = $('#bot-log');
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+  log.textContent = (d.log && d.log.length) ? d.log.join('\n') : 'Bot not running.';
+  if (atBottom) log.scrollTop = log.scrollHeight;
+}
+
+$('#bot-save').onclick = async () => {
+  const f = $('#bot-form');
+  const body = {};
+  for (const k of ['CHANNEL_ID','MC_HOST','MC_PORT','POLL_INTERVAL','GUILD_ID'])
+    body[k] = f[k].value.trim();
+  const res = await api('/api/bot/settings', body);
+  botFormDirty = false;
+  if (res.error) alert(res.error); else refreshBot();
+};
+$('#bot-start').onclick = async () => { const r = await api('/api/bot/start', {}); if (r.error) alert(r.error); refreshBot(); };
+$('#bot-stop').onclick = async () => { const r = await api('/api/bot/stop', {}); if (r.error) alert(r.error); refreshBot(); };
+
+function tick() { refreshStatus(); refreshBot(); }
+refreshServers();
+tick();
+setInterval(() => { refreshServers(); tick(); }, 2000);
+</script>
+</body>
+</html>

@@ -1,0 +1,3 @@
+flask>=3.0
+mcstatus>=11  # server ping: players, version, MOTD
+psutil>=5.9   # process tree metrics + clean kill
