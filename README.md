@@ -1,19 +1,28 @@
 # Local Minecraft Server Dashboard
 
-A localhost web dashboard to launch one of your Minecraft servers, watch its live
-status (players, uptime, version, MOTD, CPU/RAM, console log), send console commands,
-and start/stop the [Discord bot](../MinecraftServerDiscordBot) with adjustable settings.
+A native desktop app (Flask UI wrapped in a `pywebview` window) to launch one of your
+Minecraft servers, watch its live status (players, uptime, version, MOTD, CPU/RAM,
+console log), send console commands, and start/stop the
+[Discord bot](../MinecraftServerDiscordBot) with adjustable settings.
 
-## Setup
+## Run
 
-Requires Python (the `py` launcher) and Java on PATH for the servers.
+Double-click the **Minecraft Dashboard** shortcut on your desktop (launches with no
+console window), or from a terminal:
 
 ```bash
 run.bat
 ```
 
-That installs deps and opens <http://127.0.0.1:8765>. The dashboard binds to
-`127.0.0.1` only, so it is not reachable from the network.
+`run.bat` installs deps and opens the app window. It runs a Flask server bound to
+`127.0.0.1` only (not reachable from the network) and displays it in a native window
+via the Edge WebView2 runtime built into Windows.
+
+To open in your browser instead of a window (e.g. for debugging):
+
+```bash
+py app.py --web
+```
 
 ## Config (`config.json`)
 
@@ -34,6 +43,13 @@ That installs deps and opens <http://127.0.0.1:8765>. The dashboard binds to
 - **Bot**: Save writes `CHANNEL_ID`, `MC_HOST`, `MC_PORT`, `POLL_INTERVAL`, `GUILD_ID`
   into the bot's `.env` (your `DISCORD_TOKEN` is preserved and never shown). Start/Stop
   runs `bot.py` as a subprocess; settings apply on next start.
+- **Playit**: controls the [playit.gg](https://playit.gg) tunnel via its bundled CLI
+  (`playit start` / `stop` / `status`, no admin needed) and shows a live tail of the
+  daemon log (`C:\ProgramData\playit_gg\logs\playitd.log`) as its console. The app also
+  runs `playit start` on launch, so the tunnel is up whenever the dashboard is open.
+
+The UI has four tabs: **Overview** (at-a-glance tiles for everything), **MC Server**,
+**Discord Bot**, and **Playit**.
 
 ## Test
 

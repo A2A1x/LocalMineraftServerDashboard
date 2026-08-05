@@ -1,3 +1,4 @@
 flask>=3.0
+pywebview>=5.0  # native desktop window (Edge WebView2 on Windows)
 mcstatus>=11  # server ping: players, version, MOTD
 psutil>=5.9   # process tree metrics + clean kill

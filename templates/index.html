@@ -8,65 +8,101 @@
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: #12151c; color: #e6e9ef; }
-  header { padding: 16px 24px; background: #0d1017; border-bottom: 1px solid #262c39; }
-  header h1 { margin: 0; font-size: 18px; }
-  main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px 24px; max-width: 1400px; }
-  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  header { padding: 14px 24px 0; background: #0d1017; border-bottom: 1px solid #262c39; }
+  header h1 { margin: 0 0 10px; font-size: 18px; }
+  nav.tabs { display: flex; gap: 4px; }
+  nav.tabs button { background: transparent; color: #93a0b5; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 9px 16px; cursor: pointer; font: inherit; font-weight: 600; }
+  nav.tabs button:hover { color: #e6e9ef; }
+  nav.tabs button.active { color: #e6e9ef; border-bottom-color: #3182ce; }
+  main { padding: 16px 24px; }
+  .tab[hidden] { display: none; }
   .card { background: #171b24; border: 1px solid #262c39; border-radius: 10px; padding: 16px; }
   .card h2 { margin: 0 0 12px; font-size: 15px; }
   .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
   .offline { background: #3a2226; color: #ff8a8a; }
   .starting, .stopping { background: #3a3422; color: #ffd479; }
   .online { background: #223a2a; color: #7ee2a0; }
-  button { background: #2b6cb0; color: #fff; border: 0; border-radius: 6px; padding: 7px 12px; cursor: pointer; font: inherit; }
-  button:hover { background: #3182ce; }
+  button.act { background: #2b6cb0; color: #fff; border: 0; border-radius: 6px; padding: 7px 12px; cursor: pointer; font: inherit; }
+  button.act:hover { background: #3182ce; }
   button.danger { background: #b03b3b; } button.danger:hover { background: #d14545; }
-  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.act:disabled { opacity: .4; cursor: not-allowed; }
   select, input { background: #0f131a; color: #e6e9ef; border: 1px solid #2b3342; border-radius: 6px; padding: 6px 8px; font: inherit; }
-  .server-row { display: flex; gap: 8px; align-items: center; padding: 8px 0; border-top: 1px solid #21283400; }
+  .server-row { display: flex; gap: 8px; align-items: center; padding: 8px 0; }
   .server-row + .server-row { border-top: 1px solid #212834; }
   .server-row .name { flex: 1; font-weight: 600; }
   table.kv { width: 100%; border-collapse: collapse; }
   table.kv td { padding: 3px 0; vertical-align: top; }
   table.kv td.k { color: #93a0b5; width: 110px; }
-  pre.log { background: #0b0e14; border: 1px solid #212834; border-radius: 6px; padding: 10px; height: 240px; overflow: auto; margin: 10px 0 0; white-space: pre-wrap; font: 12px/1.45 ui-monospace, monospace; }
+  pre.log { background: #0b0e14; border: 1px solid #212834; border-radius: 6px; padding: 10px; height: 48vh; min-height: 220px; overflow: auto; margin: 10px 0 0; white-space: pre-wrap; font: 12px/1.45 ui-monospace, monospace; }
   .row { display: flex; gap: 8px; margin-top: 8px; }
   .row > input { flex: 1; }
   form.settings { display: grid; grid-template-columns: 120px 1fr; gap: 8px 10px; align-items: center; }
   form.settings label { color: #93a0b5; }
   .muted { color: #93a0b5; font-size: 12px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+  .tile { background: #171b24; border: 1px solid #262c39; border-radius: 10px; padding: 14px 16px; }
+  .tile-k { color: #93a0b5; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 6px; }
+  .tile .big { font-size: 22px; font-weight: 700; }
 </style>
 </head>
 <body>
-<header><h1>Minecraft Server Dashboard</h1></header>
+<header>
+  <h1>Minecraft Server Dashboard</h1>
+  <nav class="tabs">
+    <button data-tab="overview" class="active">Overview</button>
+    <button data-tab="server">MC Server</button>
+    <button data-tab="bot">Discord Bot</button>
+    <button data-tab="playit">Playit</button>
+  </nav>
+</header>
 <main>
-  <section class="card" id="server-card">
-    <h2>Servers</h2>
-    <div id="server-list"></div>
-    <div id="status-panel" style="margin-top:14px"></div>
-    <pre class="log" id="server-log">No server running.</pre>
-    <div class="row">
-      <input id="cmd" placeholder="Console command (e.g. say hello)" disabled>
-      <button id="cmd-send" disabled>Send</button>
+  <section id="tab-overview" class="tab">
+    <div class="tiles" id="overview-tiles"></div>
+  </section>
+
+  <section id="tab-server" class="tab" hidden>
+    <div class="card">
+      <h2>Servers</h2>
+      <div id="server-list"></div>
+      <div id="status-panel" style="margin-top:14px"></div>
+      <pre class="log" id="server-log">No server running.</pre>
+      <div class="row">
+        <input id="cmd" placeholder="Console command (e.g. say hello)" disabled>
+        <button class="act" id="cmd-send" disabled>Send</button>
+      </div>
     </div>
   </section>
 
-  <section class="card" id="bot-card">
-    <h2>Discord Bot <span id="bot-badge" class="badge offline">stopped</span></h2>
-    <form class="settings" id="bot-form">
-      <label>Channel ID</label><input name="CHANNEL_ID">
-      <label>MC host</label><input name="MC_HOST">
-      <label>MC port</label><input name="MC_PORT">
-      <label>Poll interval (s)</label><input name="POLL_INTERVAL">
-      <label>Guild ID</label><input name="GUILD_ID">
-      <label>Token</label><span class="muted" id="token-state">—</span>
-    </form>
-    <div class="row">
-      <button id="bot-save">Save settings</button>
-      <button id="bot-start">Start bot</button>
-      <button id="bot-stop" class="danger">Stop bot</button>
+  <section id="tab-bot" class="tab" hidden>
+    <div class="card">
+      <h2>Discord Bot <span id="bot-badge" class="badge offline">stopped</span></h2>
+      <form class="settings" id="bot-form">
+        <label>Channel ID</label><input name="CHANNEL_ID">
+        <label>MC host</label><input name="MC_HOST">
+        <label>MC port</label><input name="MC_PORT">
+        <label>Poll interval (s)</label><input name="POLL_INTERVAL">
+        <label>Guild ID</label><input name="GUILD_ID">
+        <label>Token</label><span class="muted" id="token-state">—</span>
+      </form>
+      <div class="row">
+        <button class="act" id="bot-save">Save settings</button>
+        <button class="act" id="bot-start">Start bot</button>
+        <button class="act danger" id="bot-stop">Stop bot</button>
+      </div>
+      <pre class="log" id="bot-log">Bot not running.</pre>
     </div>
-    <pre class="log" id="bot-log">Bot not running.</pre>
+  </section>
+
+  <section id="tab-playit" class="tab" hidden>
+    <div class="card">
+      <h2>Playit.gg Tunnel <span id="playit-badge" class="badge offline">unknown</span></h2>
+      <div id="playit-status" class="muted"></div>
+      <div class="row">
+        <button class="act" id="playit-start">Start tunnel</button>
+        <button class="act danger" id="playit-stop">Stop tunnel</button>
+      </div>
+      <pre class="log" id="playit-log">Loading…</pre>
+    </div>
   </section>
 </main>
 
@@ -74,9 +110,52 @@
 const $ = s => document.querySelector(s);
 const api = (u, body) => fetch(u, body ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)} : {}).then(r => r.json());
 
-let running = null;      // name of running server, or null
-let selectedScript = {}; // per-server chosen script
+// --- tabs ---
+document.querySelectorAll('nav.tabs button').forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll('nav.tabs button').forEach(b => b.classList.toggle('active', b === btn));
+    document.querySelectorAll('.tab').forEach(t => t.hidden = t.id !== 'tab-' + btn.dataset.tab);
+  };
+});
 
+let running = null;       // name of running server, or null
+let selectedScript = {};  // per-server chosen script
+let lastStatus = { state: 'offline' };
+let lastBot = null;
+let lastPlayit = null;
+
+// --- overview ---
+const badge = st => `<span class="badge ${st}">${st}</span>`;
+function renderOverview() {
+  const s = lastStatus || { state: 'offline' };
+  const b = lastBot;
+  const p = s.players, m = s.metrics || {};
+  const on = s.state !== 'offline';
+  const tiles = [
+    ['Server', on
+      ? `${badge(s.state)}<div class="big" style="margin-top:6px">${s.name || ''}</div><div class="muted">${s.address || ''}</div>`
+      : badge('offline')],
+    ['Players', s.state === 'online' && p
+      ? `<div class="big">${p.online}/${p.max}</div><div class="muted">${p.names && p.names.length ? p.names.join(', ') : 'nobody online'}</div>`
+      : '<div class="big">—</div>'],
+    ['Uptime', `<div class="big">${on ? (s.uptime || '—') : '—'}</div>`],
+    ['CPU / RAM', on
+      ? `<div class="big">${m.cpu ?? 0}%</div><div class="muted">${m.mem_mb ?? 0} MB</div>`
+      : '<div class="big">—</div>'],
+    ['Discord bot', b
+      ? `${badge(b.running ? 'online' : 'offline')}<div class="muted" style="margin-top:6px">${b.running ? 'running' : 'stopped'}</div>`
+      : '<div class="big">—</div>'],
+    ['Bot target', b
+      ? `<div class="muted">channel ${b.settings.CHANNEL_ID || '—'}<br>poll every ${b.settings.POLL_INTERVAL || '—'}s</div>`
+      : '<div class="muted">—</div>'],
+    ['Playit tunnel', lastPlayit && !(lastPlayit.status || {}).error
+      ? `${badge(lastPlayit.status.running ? 'online' : 'offline')}<div class="muted" style="margin-top:6px">${lastPlayit.status.running ? (lastPlayit.status.uptime ? 'up ' + lastPlayit.status.uptime : 'running') : (lastPlayit.status.phase || 'stopped')}</div>`
+      : `<div class="big">—</div>`],
+  ];
+  $('#overview-tiles').innerHTML = tiles.map(([k, v]) => `<div class="tile"><div class="tile-k">${k}</div>${v}</div>`).join('');
+}
+
+// --- MC server tab ---
 async function refreshServers() {
   const { servers, running: run } = await api('/api/servers');
   running = run;
@@ -85,13 +164,13 @@ async function refreshServers() {
   for (const s of servers) {
     const row = document.createElement('div');
     row.className = 'server-row';
-    const sel = servers.length ? s.scripts.map(x => `<option>${x}</option>`).join('') : '';
+    const opts = s.scripts.map(x => `<option>${x}</option>`).join('');
     const isRunning = run === s.name;
     const disableStart = run !== null;
     row.innerHTML = `
       <span class="name">${s.name}</span>
-      <select ${isRunning || !s.scripts.length ? 'disabled' : ''} data-name="${s.name}">${sel}</select>
-      <button data-start="${s.name}" ${disableStart || !s.scripts.length ? 'disabled' : ''}>Start</button>`;
+      <select ${isRunning || !s.scripts.length ? 'disabled' : ''} data-name="${s.name}">${opts}</select>
+      <button class="act" data-start="${s.name}" ${disableStart || !s.scripts.length ? 'disabled' : ''}>Start</button>`;
     list.appendChild(row);
   }
   list.querySelectorAll('select').forEach(el => {
@@ -111,11 +190,9 @@ async function refreshServers() {
 
 function statusPanel(d) {
   if (d.state === 'offline') return '<span class="badge offline">offline</span>';
-  const m = d.metrics || {};
-  const p = d.players;
-  const badge = `<span class="badge ${d.state}">${d.state}</span>`;
+  const m = d.metrics || {}, p = d.players;
   const rows = [
-    ['', badge + `  <button class="danger" id="stop-btn">Stop</button>`],
+    ['', badge(d.state) + `  <button class="act danger" id="stop-btn">Stop</button>`],
     ['Server', d.name || ''],
     ['Address', d.address || ''],
     ['Uptime', d.uptime || ''],
@@ -124,11 +201,12 @@ function statusPanel(d) {
     ['Players', p ? `${p.online}/${p.max}${p.names && p.names.length ? ' — ' + p.names.join(', ') : ''}` : '—'],
     ['CPU / RAM', `${m.cpu ?? 0}%  /  ${m.mem_mb ?? 0} MB`],
   ];
-  return `<table class="kv">${rows.map(([k,v]) => `<tr><td class="k">${k}</td><td>${v}</td></tr>`).join('')}</table>`;
+  return `<table class="kv">${rows.map(([k, v]) => `<tr><td class="k">${k}</td><td>${v}</td></tr>`).join('')}</table>`;
 }
 
 async function refreshStatus() {
   const d = await api('/api/server/status');
+  lastStatus = d;
   $('#status-panel').innerHTML = statusPanel(d);
   const log = $('#server-log');
   const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
@@ -138,6 +216,7 @@ async function refreshStatus() {
   $('#cmd').disabled = !active; $('#cmd-send').disabled = !active;
   const stopBtn = $('#stop-btn');
   if (stopBtn) stopBtn.onclick = async () => { await api('/api/server/stop', {}); refreshStatus(); };
+  renderOverview();
 }
 
 $('#cmd-send').onclick = sendCmd;
@@ -150,14 +229,16 @@ async function sendCmd() {
   refreshStatus();
 }
 
+// --- Discord bot tab ---
 let botFormDirty = false;
 $('#bot-form').addEventListener('input', () => botFormDirty = true);
 
 async function refreshBot() {
   const d = await api('/api/bot');
-  const badge = $('#bot-badge');
-  badge.textContent = d.running ? 'running' : 'stopped';
-  badge.className = 'badge ' + (d.running ? 'online' : 'offline');
+  lastBot = d;
+  const b = $('#bot-badge');
+  b.textContent = d.running ? 'running' : 'stopped';
+  b.className = 'badge ' + (d.running ? 'online' : 'offline');
   if (!botFormDirty) {
     const s = d.settings;
     for (const k of ['CHANNEL_ID','MC_HOST','MC_PORT','POLL_INTERVAL','GUILD_ID'])
@@ -170,13 +251,12 @@ async function refreshBot() {
   const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
   log.textContent = (d.log && d.log.length) ? d.log.join('\n') : 'Bot not running.';
   if (atBottom) log.scrollTop = log.scrollHeight;
+  renderOverview();
 }
 
 $('#bot-save').onclick = async () => {
-  const f = $('#bot-form');
-  const body = {};
-  for (const k of ['CHANNEL_ID','MC_HOST','MC_PORT','POLL_INTERVAL','GUILD_ID'])
-    body[k] = f[k].value.trim();
+  const f = $('#bot-form'), body = {};
+  for (const k of ['CHANNEL_ID','MC_HOST','MC_PORT','POLL_INTERVAL','GUILD_ID']) body[k] = f[k].value.trim();
   const res = await api('/api/bot/settings', body);
   botFormDirty = false;
   if (res.error) alert(res.error); else refreshBot();
@@ -184,9 +264,30 @@ $('#bot-save').onclick = async () => {
 $('#bot-start').onclick = async () => { const r = await api('/api/bot/start', {}); if (r.error) alert(r.error); refreshBot(); };
 $('#bot-stop').onclick = async () => { const r = await api('/api/bot/stop', {}); if (r.error) alert(r.error); refreshBot(); };
 
-function tick() { refreshStatus(); refreshBot(); }
-refreshServers();
-tick();
+// --- Playit tab ---
+async function refreshPlayit() {
+  const d = await api('/api/playit');
+  lastPlayit = d;
+  const s = d.status || {};
+  const b = $('#playit-badge');
+  b.textContent = s.error ? 'not found' : (s.running ? 'running' : (s.phase || 'stopped'));
+  b.className = 'badge ' + (s.running ? 'online' : 'offline');
+  $('#playit-status').textContent = s.error ? s.error
+    : `Phase: ${s.phase || '—'}  ·  Uptime: ${s.uptime || '—'}  ·  Version: ${s.version || '—'}  ·  Secret: ${s.secret_configured ? 'configured' : 'missing'}`;
+  $('#playit-start').disabled = !!s.error || s.running;
+  $('#playit-stop').disabled = !!s.error || !s.running;
+  const log = $('#playit-log');
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+  log.textContent = (d.log && d.log.length) ? d.log.join('\n') : '(no log output)';
+  if (atBottom) log.scrollTop = log.scrollHeight;
+  renderOverview();
+}
+$('#playit-start').onclick = async () => { const r = await api('/api/playit/start', {}); if (r.error) alert(r.error); refreshPlayit(); };
+$('#playit-stop').onclick = async () => { const r = await api('/api/playit/stop', {}); if (r.error) alert(r.error); refreshPlayit(); };
+
+// --- poll ---
+function tick() { refreshStatus(); refreshBot(); refreshPlayit(); }
+refreshServers(); tick();
 setInterval(() => { refreshServers(); tick(); }, 2000);
 </script>
 </body>

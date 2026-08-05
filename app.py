@@ -18,6 +18,8 @@ HERE = Path(__file__).resolve().parent
 DEFAULTS = {
     "servers_root": r"C:\Users\jaalf\OneDrive\Desktop\Minecraft Servers",
     "bot_dir": r"C:\Users\jaalf\Documents\Github\MinecraftServerDiscordBot",
+    "playit_exe": r"C:\Program Files\playit_gg\bin\playit.exe",
+    "playit_log": r"C:\ProgramData\playit_gg\logs\playitd.log",
     "host": "127.0.0.1",
     "port": 8765,
 }
@@ -35,6 +37,11 @@ def load_config():
 CONFIG = load_config()
 BOT_DIR = Path(CONFIG["bot_dir"])
 SERVERS_ROOT = Path(CONFIG["servers_root"])
+PLAYIT_EXE = Path(CONFIG["playit_exe"])
+PLAYIT_LOG = Path(CONFIG["playit_log"])
+
+# Launch children without flashing a console window (matters under pythonw).
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
 
 # Reuse the bot's tested helpers; fall back to tiny local copies if the bot
 # repo isn't where config says (dashboard still works, just less DRY).
@@ -240,6 +247,7 @@ def api_server_start():
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            creationflags=NO_WINDOW,
         )
         SERVER = Proc(popen, name)
         SERVER_META = {"name": name, "port": match["port"]}
@@ -369,6 +377,7 @@ def api_bot_start():
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            creationflags=NO_WINDOW,
         )
         BOT = Proc(popen, "discord-bot")
         return jsonify({"ok": True})
@@ -382,7 +391,108 @@ def api_bot_stop():
     return jsonify({"ok": True})
 
 
-if __name__ == "__main__":
+# ---------- playit.gg ----------
+
+def _tail(path: Path, n: int = 300, chunk: int = 64000) -> list:
+    """Last n lines of a (possibly large) log file, reading only its tail."""
+    try:
+        size = path.stat().st_size
+        with open(path, "rb") as f:
+            f.seek(max(0, size - chunk))
+            data = f.read()
+    except OSError:
+        return []
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    if size > chunk and lines:
+        lines = lines[1:]  # first line is likely partial
+    return lines[-n:]
+
+
+def _playit_run(*args, timeout=30) -> dict:
+    if not PLAYIT_EXE.is_file():
+        return {"error": f"playit not found at {PLAYIT_EXE}"}
+    try:
+        r = subprocess.run([str(PLAYIT_EXE), *args], capture_output=True,
+                           text=True, timeout=timeout, creationflags=NO_WINDOW)
+    except (OSError, subprocess.SubprocessError) as e:
+        return {"error": str(e)}
+    return {"ok": r.returncode == 0, "output": (r.stdout + r.stderr).strip(),
+            "raw": r.stdout}
+
+
+def playit_status() -> dict:
+    r = _playit_run("status", timeout=10)
+    if "error" in r:
+        return {"running": False, "error": r["error"]}
+    info = {}
+    for line in r["raw"].splitlines():
+        if ":" in line:
+            k, _, v = line.partition(":")
+            info[k.strip()] = v.strip()
+    phase = info.get("Phase", "")
+    out = {"running": phase == "running", "phase": phase or "unknown",
+           "version": info.get("Version", ""),
+           "secret_configured": info.get("Secret configured", "") == "true"}
+    up = info.get("Uptime", "").split()
+    if up and up[0].isdigit():
+        out["uptime"] = format_duration(int(up[0]))
+    return out
+
+
+@app.get("/api/playit")
+def api_playit():
+    return jsonify({"status": playit_status(), "log": _tail(PLAYIT_LOG)})
+
+
+@app.post("/api/playit/start")
+def api_playit_start():
+    return jsonify(_playit_run("start"))
+
+
+@app.post("/api/playit/stop")
+def api_playit_stop():
+    return jsonify(_playit_run("stop"))
+
+
+def _ensure_playit():
+    """Best-effort: bring the tunnel up on launch (no-op if already running)."""
+    if PLAYIT_EXE.is_file():
+        _playit_run("start")
+
+
+# ---------- entrypoints ----------
+
+def _serve():
+    app.run(host=CONFIG["host"], port=CONFIG["port"], threaded=True, use_reloader=False)
+
+
+def run_web():
     url = f"http://{CONFIG['host']}:{CONFIG['port']}"
     threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-    app.run(host=CONFIG["host"], port=CONFIG["port"], threaded=True)
+    _serve()
+
+
+def run_desktop():
+    import webview
+    url = f"http://{CONFIG['host']}:{CONFIG['port']}"
+    threading.Thread(target=_serve, daemon=True).start()
+    for _ in range(100):  # wait up to ~10s for Flask to accept connections
+        if is_server_up(CONFIG["host"], CONFIG["port"], timeout=0.2):
+            break
+        time.sleep(0.1)
+    webview.create_window("Minecraft Dashboard", url, width=1320, height=900,
+                          confirm_close=True)
+    webview.start()
+
+
+if __name__ == "__main__":
+    threading.Thread(target=_ensure_playit, daemon=True).start()
+    if "--web" in sys.argv:
+        run_web()
+    else:
+        try:
+            run_desktop()
+        except ImportError:
+            print("pywebview not installed; opening in browser instead. "
+                  "Install it with: py -m pip install pywebview")
+            run_web()
