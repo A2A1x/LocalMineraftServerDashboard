@@ -2,7 +2,7 @@
 import tempfile
 from pathlib import Path
 
-from app import merge_env, scan_servers
+from app import _is_bot_cmdline, _is_server_proc, merge_env, scan_servers
 
 
 def test_scan_servers():
@@ -56,8 +56,28 @@ def test_merge_env_preserves_token_and_comments():
     assert "MC_HOST=127.0.0.1" in lines
 
 
+def test_is_bot_cmdline():
+    assert _is_bot_cmdline(["py", "bot.py"])
+    assert _is_bot_cmdline([r"C:\py\python.exe", "bot.py"])
+    assert _is_bot_cmdline([r"C:\repo\BOT.PY"])
+    assert not _is_bot_cmdline(["py", "app.py"])
+    assert not _is_bot_cmdline([])
+    assert not _is_bot_cmdline(None)
+
+
+def test_is_server_proc():
+    root = r"C:\Servers"
+    assert _is_server_proc("java.exe", r"C:\Servers\MC", root)
+    assert _is_server_proc("cmd.exe", r"c:\servers\mc", root)      # case-insensitive
+    assert not _is_server_proc("java.exe", r"C:\Other\x", root)    # outside root
+    assert not _is_server_proc("chrome.exe", r"C:\Servers\MC", root)  # wrong process
+    assert not _is_server_proc("java.exe", "", root)               # no cwd
+
+
 if __name__ == "__main__":
     test_scan_servers()
     test_scan_default_port()
     test_merge_env_preserves_token_and_comments()
+    test_is_bot_cmdline()
+    test_is_server_proc()
     print("all tests passed")

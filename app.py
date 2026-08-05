@@ -142,6 +142,7 @@ class Proc:
         self.started_at = time.time()
         self.log = deque(maxlen=500)
         self.stopping = False
+        self._pcache = {}  # pid -> psutil.Process, kept across polls for cpu deltas
         threading.Thread(target=self._reader, daemon=True).start()
 
     def _reader(self):
@@ -176,21 +177,33 @@ class Proc:
                 pass
 
     def metrics(self) -> dict:
-        """CPU% and RAM (MB) summed over the process tree, else zeros."""
+        """CPU% (of the whole machine) and RAM (MB) over the process tree.
+
+        cpu_percent(interval=None) is a delta since the previous call on the
+        *same* Process object, so we cache objects by pid across polls; the
+        first poll after a process appears reads 0 until the next sample.
+        """
         try:
             parent = psutil.Process(self.popen.pid)
-            procs = [parent] + parent.children(recursive=True)
+            procs = {parent.pid: parent}
+            for c in parent.children(recursive=True):
+                procs[c.pid] = c
         except psutil.Error:
             return {"cpu": 0.0, "mem_mb": 0.0}
         cpu = 0.0
         mem = 0
-        for p in procs:
+        cache = {}
+        for pid, proc in procs.items():
+            p = self._pcache.get(pid, proc)  # reuse to keep the cpu baseline
             try:
                 cpu += p.cpu_percent(interval=None)
                 mem += p.memory_info().rss
             except psutil.Error:
-                pass
-        return {"cpu": round(cpu, 1), "mem_mb": round(mem / 1048576, 1)}
+                continue
+            cache[pid] = p
+        self._pcache = cache
+        ncpu = psutil.cpu_count() or 1
+        return {"cpu": round(cpu / ncpu, 1), "mem_mb": round(mem / 1048576, 1)}
 
 
 LOCK = threading.Lock()
@@ -225,12 +238,49 @@ def api_servers():
     return jsonify({"servers": scan_servers(SERVERS_ROOT), "running": running})
 
 
+def _is_server_proc(name: str, cwd: str, root: str) -> bool:
+    """True if a process looks like a Minecraft server (java/launcher) whose
+    working dir is inside the servers root."""
+    if not cwd:
+        return False
+    return (name.lower() in ("java.exe", "javaw.exe", "cmd.exe")
+            and cwd.lower().startswith(root.lower()))
+
+
+def _kill_existing_servers() -> int:
+    """Ensure only one server runs. The server we manage is stopped gracefully
+    (sends 'stop' so the world saves); stray, untrackable ones can only be
+    terminated. Returns how many were stopped/killed."""
+    n = 0
+    if SERVER and SERVER.alive():
+        _graceful_stop(SERVER, timeout=90)  # protects the world of our server
+        n += 1
+    root = str(SERVERS_ROOT)
+    victims = []
+    for proc in psutil.process_iter(["name", "cwd"]):
+        try:
+            if _is_server_proc(proc.info["name"] or "", proc.info["cwd"] or "", root):
+                victims.append(proc)
+        except psutil.Error:
+            continue
+    for p in victims:
+        try:
+            p.terminate()
+        except psutil.Error:
+            pass
+    _, alive = psutil.wait_procs(victims, timeout=8)
+    for p in alive:
+        try:
+            p.kill()
+        except psutil.Error:
+            pass
+    return n + len(victims)
+
+
 @app.post("/api/server/start")
 def api_server_start():
     global SERVER, SERVER_META
     with LOCK:
-        if SERVER and SERVER.alive():
-            return jsonify({"error": "A server is already running."}), 409
         data = request.get_json(force=True)
         name, script = data.get("name"), data.get("script")
         match = next((s for s in scan_servers(SERVERS_ROOT) if s["name"] == name), None)
@@ -238,6 +288,7 @@ def api_server_start():
             return jsonify({"error": "Unknown server."}), 404
         if script not in match["scripts"]:
             return jsonify({"error": "Unknown start script."}), 400
+        killed = _kill_existing_servers()  # guard: only one server at a time
         folder = Path(match["path"])
         popen = subprocess.Popen(
             ["cmd", "/c", script],
@@ -249,9 +300,17 @@ def api_server_start():
             bufsize=1,
             creationflags=NO_WINDOW,
         )
+        props = read_properties(folder / "server.properties")
         SERVER = Proc(popen, name)
-        SERVER_META = {"name": name, "port": match["port"]}
-        return jsonify({"ok": True})
+        SERVER_META = {
+            "name": name,
+            "port": match["port"],
+            # Query (GS4) gives the full player list; the status sample is
+            # capped/anonymized. Only used when the server enables it.
+            "query": props.get("enable-query", "").lower() == "true",
+            "query_port": int(props.get("query.port") or match["port"]),
+        }
+        return jsonify({"ok": True, "replaced": killed})
 
 
 @app.post("/api/server/command")
@@ -293,13 +352,27 @@ def api_server_status():
     }
     if not SERVER.stopping and is_server_up(host, port):
         resp["state"] = "online"
+        got_names = False
+        if SERVER_META.get("query"):  # full roster via GS4 query when enabled
+            try:
+                q = JavaServer(host, SERVER_META.get("query_port", port), timeout=2).query()
+                # mcstatus>=11 exposes the roster as .list; older used .names
+                roster = getattr(q.players, "list", None)
+                if roster is None:
+                    roster = getattr(q.players, "names", [])
+                resp["players"] = {"online": q.players.online, "max": q.players.max,
+                                   "names": sorted(roster)}
+                got_names = True
+            except Exception:
+                pass  # query enabled but not answering; fall back to the sample
         try:
             st = JavaServer(host, port, timeout=2).status()
-            resp["players"] = {
-                "online": st.players.online,
-                "max": st.players.max,
-                "names": sorted(p.name for p in (st.players.sample or [])),
-            }
+            if not got_names:  # status sample: capped and may be "Anonymous Player"
+                resp["players"] = {
+                    "online": st.players.online,
+                    "max": st.players.max,
+                    "names": sorted(p.name for p in (st.players.sample or [])),
+                }
             resp["version"] = st.version.name
             try:
                 resp["motd"] = st.motd.to_plain()
@@ -361,14 +434,49 @@ def api_bot_settings():
     return jsonify({"ok": True, "settings": _bot_settings()})
 
 
+def _is_bot_cmdline(cmdline) -> bool:
+    """True if a process command line looks like it's running the bot script."""
+    return any("bot.py" in str(a).lower() for a in (cmdline or []))
+
+
+def _kill_existing_bots() -> int:
+    """Kill any stray bot.py processes (launcher + child) under BOT_DIR so we
+    never end up with two bots on the same token. Returns how many were killed."""
+    target = str(BOT_DIR).lower()
+    victims = []
+    for proc in psutil.process_iter(["cmdline"]):
+        try:
+            if not _is_bot_cmdline(proc.info["cmdline"]):
+                continue
+            try:
+                if proc.cwd().lower() != target:
+                    continue
+            except (psutil.Error, OSError):
+                pass  # cwd unreadable; still a bot.py match, kill it
+            victims.append(proc)
+        except psutil.Error:
+            continue
+    for p in victims:
+        try:
+            p.terminate()
+        except psutil.Error:
+            pass
+    _, alive = psutil.wait_procs(victims, timeout=5)
+    for p in alive:
+        try:
+            p.kill()
+        except psutil.Error:
+            pass
+    return len(victims)
+
+
 @app.post("/api/bot/start")
 def api_bot_start():
     global BOT
     with LOCK:
-        if BOT and BOT.alive():
-            return jsonify({"error": "Bot already running."}), 409
         if not (BOT_DIR / "bot.py").is_file():
             return jsonify({"error": f"bot.py not found in {BOT_DIR}"}), 404
+        killed = _kill_existing_bots()  # guard: no duplicate bots
         popen = subprocess.Popen(
             ["py", "bot.py"],
             cwd=str(BOT_DIR),
@@ -380,7 +488,7 @@ def api_bot_start():
             creationflags=NO_WINDOW,
         )
         BOT = Proc(popen, "discord-bot")
-        return jsonify({"ok": True})
+        return jsonify({"ok": True, "replaced": killed})
 
 
 @app.post("/api/bot/stop")

@@ -58,6 +58,10 @@
 <main>
   <section id="tab-overview" class="tab">
     <div class="tiles" id="overview-tiles"></div>
+    <div class="card" style="margin-top:16px">
+      <h2>MC Server Console</h2>
+      <pre class="log" id="overview-server-log">No server running.</pre>
+    </div>
   </section>
 
   <section id="tab-server" class="tab" hidden>
@@ -109,6 +113,11 @@
 <script>
 const $ = s => document.querySelector(s);
 const api = (u, body) => fetch(u, body ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)} : {}).then(r => r.json());
+function writeLog(el, lines, empty) {
+  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  el.textContent = (lines && lines.length) ? lines.join('\n') : empty;
+  if (atBottom) el.scrollTop = el.scrollHeight;
+}
 
 // --- tabs ---
 document.querySelectorAll('nav.tabs button').forEach(btn => {
@@ -208,10 +217,9 @@ async function refreshStatus() {
   const d = await api('/api/server/status');
   lastStatus = d;
   $('#status-panel').innerHTML = statusPanel(d);
-  const log = $('#server-log');
-  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
-  log.textContent = (d.log && d.log.length) ? d.log.join('\n') : (d.state === 'offline' ? 'No server running.' : '(waiting for output)');
-  if (atBottom) log.scrollTop = log.scrollHeight;
+  const emptyMsg = d.state === 'offline' ? 'No server running.' : '(waiting for output)';
+  writeLog($('#server-log'), d.log, emptyMsg);
+  writeLog($('#overview-server-log'), d.log, emptyMsg);
   const active = d.state !== 'offline';
   $('#cmd').disabled = !active; $('#cmd-send').disabled = !active;
   const stopBtn = $('#stop-btn');
@@ -247,10 +255,7 @@ async function refreshBot() {
   }
   $('#bot-start').disabled = d.running;
   $('#bot-stop').disabled = !d.running;
-  const log = $('#bot-log');
-  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
-  log.textContent = (d.log && d.log.length) ? d.log.join('\n') : 'Bot not running.';
-  if (atBottom) log.scrollTop = log.scrollHeight;
+  writeLog($('#bot-log'), d.log, 'Bot not running.');
   renderOverview();
 }
 
@@ -276,10 +281,7 @@ async function refreshPlayit() {
     : `Phase: ${s.phase || '—'}  ·  Uptime: ${s.uptime || '—'}  ·  Version: ${s.version || '—'}  ·  Secret: ${s.secret_configured ? 'configured' : 'missing'}`;
   $('#playit-start').disabled = !!s.error || s.running;
   $('#playit-stop').disabled = !!s.error || !s.running;
-  const log = $('#playit-log');
-  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
-  log.textContent = (d.log && d.log.length) ? d.log.join('\n') : '(no log output)';
-  if (atBottom) log.scrollTop = log.scrollHeight;
+  writeLog($('#playit-log'), d.log, '(no log output)');
   renderOverview();
 }
 $('#playit-start').onclick = async () => { const r = await api('/api/playit/start', {}); if (r.error) alert(r.error); refreshPlayit(); };
