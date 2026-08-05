@@ -1,6 +1,8 @@
 {
   "servers_root": "C:\\Users\\jaalf\\OneDrive\\Desktop\\Minecraft Servers",
   "bot_dir": "C:\\Users\\jaalf\\Documents\\Github\\MinecraftServerDiscordBot",
+  "playit_address": "wherein-sins.tun.ply.gg",
+  "backup_keep": 10,
   "host": "127.0.0.1",
   "port": 8765
 }

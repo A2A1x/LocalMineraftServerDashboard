@@ -47,6 +47,13 @@
   form.settings { display: grid; grid-template-columns: 120px 1fr; gap: 8px 10px; align-items: center; }
   form.settings label { color: #93a0b5; }
   .muted { color: #93a0b5; font-size: 12px; }
+  .padmin-title { color: #93a0b5; font-size: 12px; margin-bottom: 4px; }
+  .padmin-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
+  .padmin-row .pname { flex: 1; font-weight: 600; }
+  .pbtn { background: #243044; color: #cfd6e2; border: 0; border-radius: 4px; padding: 3px 9px; font: inherit; font-size: 12px; cursor: pointer; }
+  .pbtn:hover { background: #2e3d56; }
+  .pbtn.danger { background: #5a2a2a; } .pbtn.danger:hover { background: #7a3636; }
+  .act:disabled, .pbtn:disabled { opacity: .4; cursor: not-allowed; }
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
   .tile { background: #171b24; border: 1px solid #262c39; border-radius: 10px; padding: 14px 16px; }
   .tile-k { color: #93a0b5; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 6px; }
@@ -61,6 +68,7 @@
     <button data-tab="server">MC Server</button>
     <button data-tab="bot">Discord Bot</button>
     <button data-tab="playit">Playit</button>
+    <button data-tab="config">Config</button>
     <span class="header-actions">
       <button id="start-all">Start All</button>
       <button id="stop-all">Stop All</button>
@@ -81,6 +89,22 @@
       <h2>Servers</h2>
       <div id="server-list"></div>
       <div id="status-panel" style="margin-top:14px"></div>
+      <div id="players-admin" style="margin-top:12px"></div>
+      <div class="row" id="quick-actions" style="flex-wrap:wrap; margin-top:12px">
+        <button class="act qa" data-cmd="save-all">Save All</button>
+        <button class="act qa" data-cmd="weather clear">Clear Weather</button>
+        <button class="act qa" data-cmd="time set day">Set Day</button>
+        <button class="act qa" data-cmd="time set night">Set Night</button>
+        <button class="act qa danger" id="stop-countdown">Stop (30s warning)</button>
+        <button class="act" id="backup-now">Backup now</button>
+        <span id="backup-status" class="muted"></span>
+      </div>
+      <div id="backup-list" class="muted" style="margin-top:6px"></div>
+      <div class="row" style="margin-top:10px">
+        <input id="log-filter" placeholder="Filter console…" style="flex:1">
+        <label class="muted" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="log-pause"> pause</label>
+        <button class="act" id="log-download">Download log</button>
+      </div>
       <pre class="log" id="server-log">No server running.</pre>
       <div class="row">
         <input id="cmd" placeholder="Console command (e.g. say hello)" disabled>
@@ -112,6 +136,7 @@
   <section id="tab-playit" class="tab" hidden>
     <div class="card">
       <h2>Playit.gg Tunnel <span id="playit-badge" class="badge offline">unknown</span></h2>
+      <div id="playit-address" class="muted" style="margin-bottom:6px"></div>
       <div id="playit-status" class="muted"></div>
       <div class="row">
         <button class="act" id="playit-start">Start tunnel</button>
@@ -120,12 +145,39 @@
       <pre class="log" id="playit-log">Loading…</pre>
     </div>
   </section>
+
+  <section id="tab-config" class="tab" hidden>
+    <div class="card">
+      <h2>Server Config</h2>
+      <div class="row" style="align-items:center">
+        <span class="muted">Server</span>
+        <select id="cfg-server"></select>
+        <span id="cfg-running" class="muted"></span>
+      </div>
+      <h2 style="margin-top:16px">server.properties</h2>
+      <form class="settings" id="cfg-props"></form>
+      <div class="row"><button class="act" id="cfg-props-save">Save properties</button></div>
+      <h2 style="margin-top:16px">Memory (JVM)</h2>
+      <form class="settings" id="cfg-mem">
+        <label>Max (-Xmx)</label><input name="xmx" placeholder="e.g. 8G">
+        <label>Min (-Xms)</label><input name="xms" placeholder="e.g. 4G">
+      </form>
+      <div class="row"><button class="act" id="cfg-mem-save">Save memory</button></div>
+      <h2 style="margin-top:16px">Mods (<span id="cfg-mod-count">0</span>)</h2>
+      <pre class="log" id="cfg-mods" style="height:30vh">—</pre>
+    </div>
+  </section>
 </main>
 
 <script>
 const $ = s => document.querySelector(s);
 const api = (u, body) => fetch(u, body ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)} : {}).then(r => r.json());
 const esc = s => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function copyText(t) {
+  if (navigator.clipboard) { navigator.clipboard.writeText(t); return; }
+  const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta);
+  ta.select(); try { document.execCommand('copy'); } catch (e) {} ta.remove();
+}
 function logLevel(line) {
   if (/\/(ERROR|FATAL|SEVERE)\]|\b(ERROR|FATAL|SEVERE)\b|Exception|Traceback/.test(line)) return 'error';
   if (/\/(WARN|WARNING)\]|\b(WARN|WARNING)\b/.test(line)) return 'warn';
@@ -142,10 +194,11 @@ function writeLog(el, lines, empty) {
 }
 
 // --- tabs ---
-document.querySelectorAll('nav.tabs button').forEach(btn => {
+document.querySelectorAll('nav.tabs button[data-tab]').forEach(btn => {
   btn.onclick = () => {
-    document.querySelectorAll('nav.tabs button').forEach(b => b.classList.toggle('active', b === btn));
+    document.querySelectorAll('nav.tabs button[data-tab]').forEach(b => b.classList.toggle('active', b === btn));
     document.querySelectorAll('.tab').forEach(t => t.hidden = t.id !== 'tab-' + btn.dataset.tab);
+    if (btn.dataset.tab === 'config') loadConfigServers().then(loadConfig);
   };
 });
 
@@ -180,7 +233,7 @@ function renderOverview() {
       ? `${badge(b.running ? 'online' : 'offline')}<div class="muted" style="margin-top:6px">${b.running ? 'running' : 'stopped'}</div>`
       : '<div class="big">—</div>'],
     ['Playit tunnel', lastPlayit && !(lastPlayit.status || {}).error
-      ? `${badge(lastPlayit.status.running ? 'online' : 'offline')}<div class="muted" style="margin-top:6px">${lastPlayit.status.running ? (lastPlayit.status.uptime ? 'up ' + lastPlayit.status.uptime : 'running') : (lastPlayit.status.phase || 'stopped')}</div>`
+      ? `${badge(lastPlayit.status.running ? 'online' : 'offline')}<div class="muted" style="margin-top:6px">${lastPlayit.status.running ? (lastPlayit.status.uptime ? 'up ' + lastPlayit.status.uptime : 'running') : (lastPlayit.status.phase || 'stopped')}</div>${lastPlayit.address ? `<div class="muted" style="margin-top:4px">${esc(lastPlayit.address)} <button class="pbtn" onclick="copyText('${lastPlayit.address}')">copy</button></div>` : ''}`
       : `<div class="big">—</div>`],
   ];
   $('#overview-tiles').innerHTML = tiles.map(([k, v]) => `<div class="tile"><div class="tile-k">${k}</div>${v}</div>`).join('');
@@ -245,23 +298,53 @@ async function refreshStatus() {
   lastStatus = d;
   $('#status-panel').innerHTML = statusPanel(d);
   const emptyMsg = d.state === 'offline' ? 'No server running.' : '(waiting for output)';
-  writeLog($('#server-log'), d.log, emptyMsg);
+  renderServerLog();
   writeLog($('#overview-server-log'), d.log, emptyMsg);
   const canCmd = d.state !== 'offline' && (!d.adopted || d.rcon);
   $('#cmd').disabled = !canCmd; $('#cmd-send').disabled = !canCmd;
   $('#cmd').placeholder = (d.adopted && !d.rcon)
     ? 'Read-only console — enable RCON + restart to send commands to a reconnected server'
     : 'Console command (e.g. say hello)';
+  renderPlayersAdmin(d, canCmd);
+  document.querySelectorAll('#quick-actions .qa').forEach(b => b.disabled = !canCmd);
+  $('#backup-now').disabled = d.state === 'offline';
   const stopBtn = $('#stop-btn');
   if (stopBtn) stopBtn.onclick = async () => { await api('/api/server/stop', {}); refreshStatus(); };
   renderOverview();
 }
 
+function renderServerLog() {
+  if ($('#log-pause').checked) return;  // frozen
+  const d = lastStatus || {};
+  const emptyMsg = d.state === 'offline' ? 'No server running.' : '(waiting for output)';
+  const f = $('#log-filter').value.trim().toLowerCase();
+  const lines = d.log || [];
+  writeLog($('#server-log'), f ? lines.filter(l => l.toLowerCase().includes(f)) : lines, emptyMsg);
+}
+$('#log-filter').oninput = renderServerLog;
+$('#log-pause').onchange = renderServerLog;
+$('#log-download').onclick = () => {
+  const a = document.createElement('a');
+  a.href = '/api/server/log/download'; a.download = 'latest.log';
+  document.body.appendChild(a); a.click(); a.remove();
+};
+
+let cmdHistory = [], histIdx = -1;
 $('#cmd-send').onclick = sendCmd;
-$('#cmd').addEventListener('keydown', e => { if (e.key === 'Enter') sendCmd(); });
+$('#cmd').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { sendCmd(); return; }
+  if (e.key === 'ArrowUp' && histIdx < cmdHistory.length - 1) {
+    histIdx++; $('#cmd').value = cmdHistory[cmdHistory.length - 1 - histIdx]; e.preventDefault();
+  } else if (e.key === 'ArrowDown') {
+    histIdx = Math.max(-1, histIdx - 1);
+    $('#cmd').value = histIdx < 0 ? '' : cmdHistory[cmdHistory.length - 1 - histIdx];
+    e.preventDefault();
+  }
+});
 async function sendCmd() {
   const cmd = $('#cmd').value.trim();
   if (!cmd) return;
+  cmdHistory.push(cmd); histIdx = -1;
   const res = await api('/api/server/command', { cmd });
   if (res.error) alert(res.error); else $('#cmd').value = '';
   refreshStatus();
@@ -304,6 +387,8 @@ async function refreshPlayit() {
   const d = await api('/api/playit');
   lastPlayit = d;
   const s = d.status || {};
+  $('#playit-address').innerHTML = d.address
+    ? `Join address: <b>${esc(d.address)}</b> <button class="pbtn" onclick="copyText('${d.address}')">copy</button>` : '';
   const b = $('#playit-badge');
   b.textContent = s.error ? 'not found' : (s.running ? 'running' : (s.phase || 'stopped'));
   b.className = 'badge ' + (s.running ? 'online' : 'offline');
@@ -316,6 +401,46 @@ async function refreshPlayit() {
 }
 $('#playit-start').onclick = async () => { const r = await api('/api/playit/start', {}); if (r.error) alert(r.error); refreshPlayit(); };
 $('#playit-stop').onclick = async () => { const r = await api('/api/playit/stop', {}); if (r.error) alert(r.error); refreshPlayit(); };
+
+// --- player admin, quick actions, backups ---
+function renderPlayersAdmin(d, canCmd) {
+  const el = $('#players-admin');
+  const names = (d.players && d.players.names || []).filter(n => n && n !== 'Anonymous Player');
+  if (d.state === 'offline' || !names.length) { el.innerHTML = ''; return; }
+  const acts = [['kick','Kick',''],['ban','Ban','danger'],['op','Op',''],['whitelist','Whitelist','']];
+  el.innerHTML = `<div class="padmin-title">Online players (${d.players.online})</div>` +
+    names.map(n => `<div class="padmin-row"><span class="pname">${esc(n)}</span>` +
+      acts.map(([a,label,cls]) => `<button class="pbtn ${cls}" data-p="${esc(n)}" data-a="${a}"${canCmd?'':' disabled'}>${label}</button>`).join('') +
+      `</div>`).join('');
+}
+$('#players-admin').addEventListener('click', async e => {
+  const b = e.target.closest('button[data-a]');
+  if (!b) return;
+  const name = b.dataset.p, action = b.dataset.a;
+  if ((action === 'ban' || action === 'kick') && !confirm(`${action} ${name}?`)) return;
+  const r = await api('/api/server/player', { name, action });
+  if (r.error) alert(r.error);
+  refreshStatus();
+});
+document.querySelectorAll('#quick-actions .qa[data-cmd]').forEach(b => {
+  b.onclick = async () => { const r = await api('/api/server/command', { cmd: b.dataset.cmd }); if (r.error) alert(r.error); };
+});
+$('#stop-countdown').onclick = async () => {
+  if (!confirm('Warn players and stop the server in 30 seconds?')) return;
+  const r = await api('/api/server/stop-countdown', {}); if (r.error) alert(r.error);
+};
+$('#backup-now').onclick = async () => {
+  const r = await api('/api/server/backup', {}); if (r.error) alert(r.error); refreshBackup();
+};
+async function refreshBackup() {
+  const d = await api('/api/backup'); const s = d.status || {};
+  $('#backup-status').textContent =
+    s.state === 'running' ? 'backing up…' :
+    s.state === 'done' ? `last: ${s.file} (${s.size_mb} MB)${s.skipped ? ` — ${s.skipped} files skipped (locked)` : ''}` :
+    s.state === 'error' ? 'backup error: ' + (s.error || '') : '';
+  $('#backup-list').innerHTML = (d.files && d.files.length)
+    ? 'Backups: ' + d.files.map(f => `${esc(f.name)} (${f.size_mb} MB)`).join(' · ') : '';
+}
 
 // --- header actions ---
 $('#start-all').onclick = async () => {
@@ -332,8 +457,62 @@ $('#stop-all').onclick = async () => {
   refreshServers(); tick();
 };
 
+// --- config tab ---
+const PROP_FIELDS = [
+  ['motd','text'], ['difficulty','select:peaceful,easy,normal,hard'],
+  ['gamemode','select:survival,creative,adventure,spectator'],
+  ['max-players','number'], ['view-distance','number'], ['simulation-distance','number'],
+  ['spawn-protection','number'], ['pvp','bool'], ['hardcore','bool'],
+  ['white-list','bool'], ['allow-nether','bool'], ['allow-flight','bool'],
+  ['enable-command-block','bool'],
+];
+async function loadConfigServers() {
+  const { servers } = await api('/api/servers');
+  const sel = $('#cfg-server'), cur = sel.value;
+  sel.innerHTML = servers.map(s => `<option>${esc(s.name)}</option>`).join('');
+  if (cur && servers.some(s => s.name === cur)) sel.value = cur;
+}
+async function loadConfig() {
+  const name = $('#cfg-server').value;
+  if (!name) return;
+  const d = await api('/api/server/config?name=' + encodeURIComponent(name));
+  if (d.error) { alert(d.error); return; }
+  $('#cfg-running').textContent = d.running
+    ? '⚠ running — properties changes apply on restart and may be overwritten when it stops' : '';
+  const p = d.properties || {};
+  $('#cfg-props').innerHTML = PROP_FIELDS.map(([k, t]) => {
+    const v = p[k] ?? '';
+    let input;
+    if (t === 'bool')
+      input = `<select name="${k}"><option${v==='true'?' selected':''}>true</option><option${v!=='true'?' selected':''}>false</option></select>`;
+    else if (t.startsWith('select:'))
+      input = `<select name="${k}">` + t.slice(7).split(',').map(o => `<option${o===v?' selected':''}>${o}</option>`).join('') + `</select>`;
+    else
+      input = `<input name="${k}" type="${t==='number'?'number':'text'}" value="${esc(String(v))}">`;
+    return `<label>${k}</label>${input}`;
+  }).join('');
+  $('#cfg-mem [name=xmx]').value = (d.mem && d.mem.xmx) || '';
+  $('#cfg-mem [name=xms]').value = (d.mem && d.mem.xms) || '';
+  $('#cfg-mod-count').textContent = (d.mods || []).length;
+  $('#cfg-mods').textContent = (d.mods || []).length ? d.mods.join('\n') : 'No mods folder / no jars.';
+}
+$('#cfg-server').onchange = loadConfig;
+$('#cfg-props-save').onclick = async () => {
+  const updates = {};
+  $('#cfg-props').querySelectorAll('[name]').forEach(el => updates[el.name] = el.value);
+  const r = await api('/api/server/properties', { name: $('#cfg-server').value, updates });
+  const b = $('#cfg-props-save');
+  if (r.error) alert(r.error); else { b.textContent = 'Saved ✓'; setTimeout(() => b.textContent = 'Save properties', 1500); }
+};
+$('#cfg-mem-save').onclick = async () => {
+  const r = await api('/api/server/memory', {
+    name: $('#cfg-server').value, xmx: $('#cfg-mem [name=xmx]').value, xms: $('#cfg-mem [name=xms]').value });
+  const b = $('#cfg-mem-save');
+  if (r.error) alert(r.error); else { b.textContent = 'Saved ✓'; setTimeout(() => b.textContent = 'Save memory', 1500); }
+};
+
 // --- poll ---
-function tick() { refreshStatus(); refreshBot(); refreshPlayit(); }
+function tick() { refreshStatus(); refreshBot(); refreshPlayit(); refreshBackup(); }
 refreshServers(); tick();
 setInterval(() => { refreshServers(); tick(); }, 2000);
 </script>

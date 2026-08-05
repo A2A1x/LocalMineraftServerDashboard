@@ -8,11 +8,12 @@ import sys
 import threading
 import time
 import webbrowser
+import zipfile
 from collections import deque
 from pathlib import Path
 
 import psutil
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
 from mcstatus import JavaServer
 
 HERE = Path(__file__).resolve().parent
@@ -22,6 +23,8 @@ DEFAULTS = {
     "bot_dir": r"C:\Users\jaalf\Documents\Github\MinecraftServerDiscordBot",
     "playit_exe": r"C:\Program Files\playit_gg\bin\playit.exe",
     "playit_log": r"C:\ProgramData\playit_gg\logs\playitd.log",
+    "playit_address": "wherein-sins.tun.ply.gg",  # the address players join
+    "backup_keep": 10,  # how many world backups to retain
     "host": "127.0.0.1",
     "port": 8765,
 }
@@ -41,6 +44,8 @@ BOT_DIR = Path(CONFIG["bot_dir"])
 SERVERS_ROOT = Path(CONFIG["servers_root"])
 PLAYIT_EXE = Path(CONFIG["playit_exe"])
 PLAYIT_LOG = Path(CONFIG["playit_log"])
+PLAYIT_ADDRESS = CONFIG["playit_address"]
+BACKUP_KEEP = int(CONFIG["backup_keep"])
 
 # Launch children without flashing a console window (matters under pythonw).
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
@@ -464,6 +469,21 @@ def _server_rcon():
     return ("127.0.0.1", int(props.get("rcon.port") or 25575), pw)
 
 
+def _send_command(cmd: str):
+    """Dispatch a console command to the running server. Returns (ok, output)."""
+    if getattr(SERVER, "adopted", False):  # no pipe; use RCON
+        rc = _server_rcon()
+        if not rc:
+            return False, ("Enable RCON (enable-rcon=true + rcon.password) and restart "
+                           "the server to send commands to a reconnected server.")
+        try:
+            return True, rcon_command(*rc, cmd)
+        except (OSError, RconError) as e:
+            return False, f"RCON: {e}"
+    SERVER.send(cmd)
+    return True, ""
+
+
 @app.post("/api/server/command")
 def api_server_command():
     if not (SERVER and SERVER.alive()):
@@ -471,17 +491,244 @@ def api_server_command():
     cmd = (request.get_json(force=True).get("cmd") or "").strip()
     if not cmd:
         return jsonify({"error": "Empty command."}), 400
-    if getattr(SERVER, "adopted", False):  # no pipe; use RCON
-        rc = _server_rcon()
-        if not rc:
-            return jsonify({"error": "Enable RCON (enable-rcon=true + rcon.password) and "
-                            "restart the server to send commands to a reconnected server."}), 409
-        try:
-            return jsonify({"ok": True, "output": rcon_command(*rc, cmd)})
-        except (OSError, RconError) as e:
-            return jsonify({"error": f"RCON: {e}"}), 502
-    SERVER.send(cmd)
+    ok, out = _send_command(cmd)
+    return (jsonify({"ok": True, "output": out}) if ok else (jsonify({"error": out}), 502))
+
+
+_NAME_RE = re.compile(r"[A-Za-z0-9_]{1,16}")
+PLAYER_ACTIONS = {"kick": "kick", "ban": "ban", "op": "op",
+                  "deop": "deop", "whitelist": "whitelist add"}
+
+
+@app.post("/api/server/player")
+def api_server_player():
+    if not (SERVER and SERVER.alive()):
+        return jsonify({"error": "No server running."}), 409
+    data = request.get_json(force=True)
+    name = (data.get("name") or "").strip()
+    action = data.get("action")
+    if action not in PLAYER_ACTIONS:
+        return jsonify({"error": "Unknown action."}), 400
+    if not _NAME_RE.fullmatch(name):  # guard against command injection
+        return jsonify({"error": "Invalid player name."}), 400
+    ok, out = _send_command(f"{PLAYER_ACTIONS[action]} {name}")
+    return (jsonify({"ok": True, "output": out}) if ok else (jsonify({"error": out}), 502))
+
+
+@app.post("/api/server/stop-countdown")
+def api_stop_countdown():
+    if not (SERVER and SERVER.alive()):
+        return jsonify({"error": "No server running."}), 409
+    target = SERVER
+
+    def worker():
+        for secs, wait in ((30, 15), (15, 10), (5, 5)):
+            _send_command(f"say Server stopping in {secs} seconds")
+            time.sleep(wait)
+        _graceful_stop(target)
+
+    threading.Thread(target=worker, daemon=True).start()
     return jsonify({"ok": True})
+
+
+# ---------- world backups ----------
+
+BACKUP = {"state": "idle", "file": None, "at": 0, "error": None}
+
+
+def _world_dir():
+    folder = SERVER_META.get("folder")
+    if not folder:
+        return None
+    level = read_properties(Path(folder) / "server.properties").get("level-name") or "world"
+    world = (Path(folder) / level).resolve()
+    if Path(folder).resolve() not in world.parents:  # no path traversal via level-name
+        return None
+    return world if world.is_dir() else None
+
+
+def _prune_backups(folder: Path, keep: int):
+    zips = sorted(folder.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for old in zips[keep:]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+
+
+def _zip_world(world: Path, dest: Path) -> int:
+    """Zip the world into dest, skipping session.lock (held exclusively by the
+    running server) and any other momentarily-locked file. Returns skip count."""
+    skipped = 0
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        for root, _dirs, files in os.walk(world):
+            for name in files:
+                if name == "session.lock":
+                    continue
+                fp = Path(root) / name
+                try:
+                    zf.write(fp, fp.relative_to(world.parent))
+                except OSError:  # locked/removed mid-backup; skip rather than fail
+                    skipped += 1
+    return skipped
+
+
+def _do_backup():
+    global BACKUP
+    folder = SERVER_META.get("folder")
+    world = _world_dir()
+    if not (folder and world):
+        BACKUP = {"state": "error", "error": "world folder not found", "at": time.time(), "file": None}
+        return
+    running = bool(SERVER and SERVER.alive())
+    try:
+        if running:  # flush to disk and pause saves for a consistent copy
+            _send_command("save-off")
+            _send_command("save-all flush")
+            time.sleep(3)
+        backups = Path(folder) / "backups"
+        backups.mkdir(exist_ok=True)
+        archive = backups / f"{world.name}-{time.strftime('%Y%m%d-%H%M%S')}.zip"
+        skipped = _zip_world(world, archive)
+        _prune_backups(backups, BACKUP_KEEP)
+        BACKUP = {"state": "done", "file": archive.name, "error": None, "skipped": skipped,
+                  "size_mb": round(archive.stat().st_size / 1048576, 1), "at": time.time()}
+    except Exception as e:
+        BACKUP = {"state": "error", "error": str(e), "at": time.time(), "file": None}
+    finally:
+        if running:
+            _send_command("save-on")
+
+
+@app.post("/api/server/backup")
+def api_server_backup():
+    global BACKUP
+    if BACKUP.get("state") == "running":
+        return jsonify({"error": "Backup already running."}), 409
+    if not SERVER_META.get("folder"):
+        return jsonify({"error": "No server selected."}), 409
+    BACKUP = {"state": "running", "file": None, "at": time.time(), "error": None}
+    threading.Thread(target=_do_backup, daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.get("/api/backup")
+def api_backup():
+    folder = SERVER_META.get("folder")
+    files = []
+    if folder:
+        bdir = Path(folder) / "backups"
+        if bdir.is_dir():
+            for z in sorted(bdir.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)[:10]:
+                files.append({"name": z.name, "size_mb": round(z.stat().st_size / 1048576, 1)})
+    return jsonify({"status": BACKUP, "files": files})
+
+
+# ---------- per-server config (properties / JVM memory / mods) ----------
+
+_MEM_RE = re.compile(r"-Xm([sx])(\d+[kKmMgG]?)")
+
+
+def _server_by_name(name):
+    return next((s for s in scan_servers(SERVERS_ROOT) if s["name"] == name), None)
+
+
+def _jvm_files(folder: Path):
+    files = list(folder.glob("*.bat"))
+    uj = folder / "user_jvm_args.txt"
+    if uj.is_file():
+        files.append(uj)
+    return files
+
+
+def _read_mem(folder: Path) -> dict:
+    xmx = xms = None
+    for f in _jvm_files(folder):
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for m in _MEM_RE.finditer(text):
+            if m.group(1) == "x":
+                xmx = m.group(2)
+            else:
+                xms = m.group(2)
+    return {"xmx": xmx, "xms": xms}
+
+
+def _set_mem(folder: Path, xmx: str, xms: str) -> int:
+    changed = 0
+    for f in _jvm_files(folder):
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        new = text
+        if xmx:
+            new = re.sub(r"-Xmx\d+[kKmMgG]?", f"-Xmx{xmx}", new)
+        if xms:
+            new = re.sub(r"-Xms\d+[kKmMgG]?", f"-Xms{xms}", new)
+        if new != text:
+            f.write_text(new, encoding="utf-8")
+            changed += 1
+    return changed
+
+
+def _list_mods(folder: Path) -> list:
+    mdir = folder / "mods"
+    return sorted(p.name for p in mdir.glob("*.jar")) if mdir.is_dir() else []
+
+
+@app.get("/api/server/config")
+def api_server_config():
+    s = _server_by_name(request.args.get("name"))
+    if not s:
+        return jsonify({"error": "Unknown server."}), 404
+    folder = Path(s["path"])
+    running = bool(SERVER and SERVER.alive() and SERVER_META.get("name") == s["name"])
+    return jsonify({"properties": read_properties(folder / "server.properties"),
+                    "mem": _read_mem(folder), "mods": _list_mods(folder), "running": running})
+
+
+@app.post("/api/server/properties")
+def api_server_properties():
+    data = request.get_json(force=True)
+    s = _server_by_name(data.get("name"))
+    if not s:
+        return jsonify({"error": "Unknown server."}), 404
+    updates = {k: str(v).replace("\n", " ").replace("\r", " ")
+               for k, v in (data.get("updates") or {}).items() if k}
+    path = Path(s["path"]) / "server.properties"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    path.write_text(merge_env(text, updates), encoding="utf-8")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/server/memory")
+def api_server_memory():
+    data = request.get_json(force=True)
+    s = _server_by_name(data.get("name"))
+    if not s:
+        return jsonify({"error": "Unknown server."}), 404
+    xmx = (data.get("xmx") or "").strip()
+    xms = (data.get("xms") or "").strip()
+    for v in (xmx, xms):
+        if v and not re.fullmatch(r"\d+[kKmMgG]?", v):
+            return jsonify({"error": f"Invalid memory value: {v!r} (e.g. 8G or 8192M)"}), 400
+    return jsonify({"ok": True, "changed": _set_mem(Path(s["path"]), xmx, xms)})
+
+
+@app.get("/api/server/log/download")
+def api_log_download():
+    folder = SERVER_META.get("folder")
+    if folder:
+        log = Path(folder) / "logs" / "latest.log"
+        if log.is_file():
+            return send_file(str(log), as_attachment=True, download_name="latest.log")
+    return jsonify({"error": "No log available."}), 404
 
 
 @app.post("/api/server/stop")
@@ -802,7 +1049,7 @@ def playit_status() -> dict:
 
 @app.get("/api/playit")
 def api_playit():
-    return jsonify({"status": playit_status(), "log": _tail(PLAYIT_LOG)})
+    return jsonify({"status": playit_status(), "log": _tail(PLAYIT_LOG), "address": PLAYIT_ADDRESS})
 
 
 @app.post("/api/playit/start")

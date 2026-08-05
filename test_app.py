@@ -1,4 +1,5 @@
 """Assert-based checks for the pure logic. Run: py test_app.py"""
+import os
 import tempfile
 from pathlib import Path
 
@@ -6,7 +7,17 @@ import socket
 import struct
 import threading
 
-from app import _is_bot_cmdline, _is_server_proc, merge_env, rcon_command, scan_servers
+from app import (
+    _NAME_RE,
+    _is_bot_cmdline,
+    _is_server_proc,
+    _prune_backups,
+    _read_mem,
+    _set_mem,
+    merge_env,
+    rcon_command,
+    scan_servers,
+)
 
 
 def test_scan_servers():
@@ -117,6 +128,39 @@ def test_rcon_roundtrip():
     assert out == "ran: list", out
 
 
+def test_valid_player_name():
+    for good in ("Notch", "player_1", "A", "x" * 16):
+        assert _NAME_RE.fullmatch(good), good
+    for bad in ("", "has space", "semi;colon", "new\nline", "x" * 17, "quote\"x"):
+        assert not _NAME_RE.fullmatch(bad), bad
+
+
+def test_prune_backups():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        made = []
+        for i in range(5):
+            f = d / f"world-{i}.zip"
+            f.write_text("x")
+            os.utime(f, (i, i))  # older -> newer by mtime
+            made.append(f)
+        _prune_backups(d, keep=3)
+        left = {p.name for p in d.glob("*.zip")}
+        assert left == {"world-2.zip", "world-3.zip", "world-4.zip"}, left  # newest 3 kept
+
+
+def test_jvm_memory():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        (d / "start.bat").write_text("java -Xmx8G -Xms4G -jar server.jar nogui\npause\n")
+        assert _read_mem(d) == {"xmx": "8G", "xms": "4G"}
+        assert _set_mem(d, "12G", "6G") == 1
+        assert _read_mem(d) == {"xmx": "12G", "xms": "6G"}
+        # untouched keys when a value is blank
+        assert _set_mem(d, "", "8192M") == 1
+        assert _read_mem(d) == {"xmx": "12G", "xms": "8192M"}
+
+
 if __name__ == "__main__":
     test_scan_servers()
     test_scan_default_port()
@@ -124,4 +168,7 @@ if __name__ == "__main__":
     test_is_bot_cmdline()
     test_is_server_proc()
     test_rcon_roundtrip()
+    test_valid_player_name()
+    test_prune_backups()
+    test_jvm_memory()
     print("all tests passed")
