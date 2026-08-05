@@ -2,7 +2,11 @@
 import tempfile
 from pathlib import Path
 
-from app import _is_bot_cmdline, _is_server_proc, merge_env, scan_servers
+import socket
+import struct
+import threading
+
+from app import _is_bot_cmdline, _is_server_proc, merge_env, rcon_command, scan_servers
 
 
 def test_scan_servers():
@@ -74,10 +78,50 @@ def test_is_server_proc():
     assert not _is_server_proc("java.exe", "", root)               # no cwd
 
 
+def test_rcon_roundtrip():
+    """Fake RCON server: verifies auth + command framing against a real socket."""
+    def recv_packet(c):
+        raw = b""
+        while len(raw) < 4:
+            raw += c.recv(4 - len(raw))
+        (ln,) = struct.unpack("<i", raw)
+        data = b""
+        while len(data) < ln:
+            data += c.recv(ln - len(data))
+        rid, ptype = struct.unpack("<ii", data[:8])
+        return rid, ptype, data[8:-2].decode()
+
+    def send_packet(c, rid, ptype, body):
+        d = struct.pack("<ii", rid, ptype) + body.encode() + b"\x00\x00"
+        c.sendall(struct.pack("<i", len(d)) + d)
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen()
+    host, port = srv.getsockname()
+    result = {}
+
+    def handle():
+        c, _ = srv.accept()
+        rid, ptype, body = recv_packet(c)          # auth (type 3)
+        result["auth_type"] = ptype
+        send_packet(c, rid if body == "secret" else -1, 2, "")  # auth response
+        rid, ptype, body = recv_packet(c)          # command (type 2)
+        send_packet(c, rid, 0, f"ran: {body}")
+        c.close()
+
+    threading.Thread(target=handle, daemon=True).start()
+    out = rcon_command(host, port, "secret", "list", timeout=3)
+    srv.close()
+    assert result["auth_type"] == 3, result
+    assert out == "ran: list", out
+
+
 if __name__ == "__main__":
     test_scan_servers()
     test_scan_default_port()
     test_merge_env_preserves_token_and_comments()
     test_is_bot_cmdline()
     test_is_server_proc()
+    test_rcon_roundtrip()
     print("all tests passed")

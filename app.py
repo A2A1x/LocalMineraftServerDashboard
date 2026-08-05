@@ -1,6 +1,8 @@
 import json
 import os
 import re
+import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -42,6 +44,48 @@ PLAYIT_LOG = Path(CONFIG["playit_log"])
 
 # Launch children without flashing a console window (matters under pythonw).
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+
+
+# ---------- RCON (Source protocol) ----------
+
+class RconError(Exception):
+    pass
+
+
+def _rcon_recv(sock) -> tuple:
+    def read(n):
+        buf = b""
+        while len(buf) < n:
+            chunk = sock.recv(n - len(buf))
+            if not chunk:
+                raise RconError("connection closed")
+            buf += chunk
+        return buf
+    (length,) = struct.unpack("<i", read(4))
+    data = read(length)
+    req_id, ptype = struct.unpack("<ii", data[:8])
+    return req_id, ptype, data[8:-2].decode("utf-8", errors="replace")
+
+
+def _rcon_send(sock, ptype: int, body: str, req_id: int = 0):
+    data = struct.pack("<ii", req_id, ptype) + body.encode("utf-8") + b"\x00\x00"
+    sock.sendall(struct.pack("<i", len(data)) + data)
+
+
+def rcon_command(host: str, port: int, password: str, command: str, timeout: float = 5.0) -> str:
+    """Run a single command over RCON and return the server's response text."""
+    with socket.create_connection((host, port), timeout=timeout) as sock:
+        sock.settimeout(timeout)
+        _rcon_send(sock, 3, password)  # SERVERDATA_AUTH
+        while True:  # some servers emit an empty value packet before the auth reply
+            req_id, ptype, _ = _rcon_recv(sock)
+            if ptype == 2:  # SERVERDATA_AUTH_RESPONSE
+                if req_id == -1:
+                    raise RconError("authentication failed (wrong rcon.password)")
+                break
+        _rcon_send(sock, 2, command)  # SERVERDATA_EXECCOMMAND
+        _, _, body = _rcon_recv(sock)
+        return body
 
 # Reuse the bot's tested helpers; fall back to tiny local copies if the bot
 # repo isn't where config says (dashboard still works, just less DRY).
@@ -133,34 +177,21 @@ def merge_env(text: str, updates: dict) -> str:
 
 # ---------- managed processes ----------
 
-class Proc:
-    """A launched subprocess with a captured, size-capped console log."""
+class _Managed:
+    """Shared state/metrics for a process tree, keyed by self.pid."""
 
-    def __init__(self, popen: subprocess.Popen, label: str):
-        self.popen = popen
+    def __init__(self, pid: int, label: str):
+        self.pid = pid
         self.label = label
         self.started_at = time.time()
         self.log = deque(maxlen=500)
         self.stopping = False
+        self.adopted = False
         self._pcache = {}  # pid -> psutil.Process, kept across polls for cpu deltas
-        threading.Thread(target=self._reader, daemon=True).start()
-
-    def _reader(self):
-        assert self.popen.stdout is not None
-        for line in self.popen.stdout:
-            self.log.append(line.rstrip("\n"))
-
-    def alive(self) -> bool:
-        return self.popen.poll() is None
-
-    def send(self, cmd: str):
-        if self.alive() and self.popen.stdin:
-            self.popen.stdin.write(cmd + "\n")
-            self.popen.stdin.flush()
 
     def kill_tree(self):
         try:
-            parent = psutil.Process(self.popen.pid)
+            parent = psutil.Process(self.pid)
             procs = parent.children(recursive=True) + [parent]
         except psutil.Error:
             return
@@ -184,7 +215,7 @@ class Proc:
         first poll after a process appears reads 0 until the next sample.
         """
         try:
-            parent = psutil.Process(self.popen.pid)
+            parent = psutil.Process(self.pid)
             procs = {parent.pid: parent}
             for c in parent.children(recursive=True):
                 procs[c.pid] = c
@@ -206,14 +237,75 @@ class Proc:
         return {"cpu": round(cpu / ncpu, 1), "mem_mb": round(mem / 1048576, 1)}
 
 
+class Proc(_Managed):
+    """A subprocess this dashboard launched, with a captured console log + stdin."""
+
+    def __init__(self, popen: subprocess.Popen, label: str):
+        super().__init__(popen.pid, label)
+        self.popen = popen
+        threading.Thread(target=self._reader, daemon=True).start()
+
+    def _reader(self):
+        assert self.popen.stdout is not None
+        for line in self.popen.stdout:
+            self.log.append(line.rstrip("\n"))
+
+    def alive(self) -> bool:
+        return self.popen.poll() is None
+
+    def send(self, cmd: str):
+        if self.alive() and self.popen.stdin:
+            self.popen.stdin.write(cmd + "\n")
+            self.popen.stdin.flush()
+
+
+class AdoptedProc(_Managed):
+    """A process the dashboard reconnected to on reopen (it didn't start it). We
+    can read status/metrics and terminate it, but have no stdin/stdout, so the
+    console log and console commands are unavailable and stop is a terminate."""
+
+    def __init__(self, pid: int, label: str):
+        super().__init__(pid, label)
+        self.adopted = True
+        try:
+            self.started_at = psutil.Process(pid).create_time()
+        except psutil.Error:
+            pass
+        self.log.append("(reconnected to an already-running process — "
+                        "live console and commands aren't available)")
+
+    def alive(self) -> bool:
+        try:
+            p = psutil.Process(self.pid)
+            return p.is_running() and p.status() != psutil.STATUS_ZOMBIE
+        except psutil.Error:
+            return False
+
+    def send(self, cmd: str):
+        pass  # no stdin on an adopted process
+
+
 LOCK = threading.Lock()
-SERVER: Proc | None = None
+SERVER: _Managed | None = None
 SERVER_META: dict = {}  # {name, port}
-BOT: Proc | None = None
+BOT: _Managed | None = None
 
 
-def _graceful_stop(proc: Proc, timeout: float = 90.0):
+def _graceful_stop(proc: _Managed, timeout: float = 90.0):
     proc.stopping = True
+    if getattr(proc, "adopted", False):
+        rc = _server_rcon()  # clean save via RCON if available; else terminate
+        if rc:
+            try:
+                rcon_command(*rc, "stop")
+                deadline = time.time() + timeout
+                while proc.alive() and time.time() < deadline:
+                    time.sleep(1)
+            except (OSError, RconError):
+                pass
+        if proc.alive():
+            proc.kill_tree()
+        return
     proc.send("stop")
     deadline = time.time() + timeout
     while proc.alive() and time.time() < deadline:
@@ -277,9 +369,55 @@ def _kill_existing_servers() -> int:
     return n + len(victims)
 
 
+STATE_FILE = HERE / "state.json"
+
+
+def _load_state() -> dict:
+    try:
+        return json.loads(STATE_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _remember_server(name: str, script: str):
+    try:
+        STATE_FILE.write_text(json.dumps({"last_server": name, "last_script": script}))
+    except OSError:
+        pass
+
+
+def _launch_server(match: dict, script: str) -> int:
+    """Launch a server (killing any existing one first). Returns replaced count."""
+    global SERVER, SERVER_META
+    killed = _kill_existing_servers()  # guard: only one server at a time
+    folder = Path(match["path"])
+    popen = subprocess.Popen(
+        ["cmd", "/c", script],
+        cwd=str(folder),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        creationflags=NO_WINDOW,
+    )
+    props = read_properties(folder / "server.properties")
+    SERVER = Proc(popen, match["name"])
+    SERVER_META = {
+        "name": match["name"],
+        "port": match["port"],
+        "folder": str(folder),
+        # Query (GS4) gives the full player list; the status sample is
+        # capped/anonymized. Only used when the server enables it.
+        "query": props.get("enable-query", "").lower() == "true",
+        "query_port": int(props.get("query.port") or match["port"]),
+    }
+    _remember_server(match["name"], script)  # for Start All next time
+    return killed
+
+
 @app.post("/api/server/start")
 def api_server_start():
-    global SERVER, SERVER_META
     with LOCK:
         data = request.get_json(force=True)
         name, script = data.get("name"), data.get("script")
@@ -288,29 +426,22 @@ def api_server_start():
             return jsonify({"error": "Unknown server."}), 404
         if script not in match["scripts"]:
             return jsonify({"error": "Unknown start script."}), 400
-        killed = _kill_existing_servers()  # guard: only one server at a time
-        folder = Path(match["path"])
-        popen = subprocess.Popen(
-            ["cmd", "/c", script],
-            cwd=str(folder),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            creationflags=NO_WINDOW,
-        )
-        props = read_properties(folder / "server.properties")
-        SERVER = Proc(popen, name)
-        SERVER_META = {
-            "name": name,
-            "port": match["port"],
-            # Query (GS4) gives the full player list; the status sample is
-            # capped/anonymized. Only used when the server enables it.
-            "query": props.get("enable-query", "").lower() == "true",
-            "query_port": int(props.get("query.port") or match["port"]),
-        }
-        return jsonify({"ok": True, "replaced": killed})
+        return jsonify({"ok": True, "replaced": _launch_server(match, script)})
+
+
+def _server_rcon():
+    """(host, port, password) if the current server has RCON enabled, else None.
+    Read from server.properties each time so config changes are picked up."""
+    folder = SERVER_META.get("folder")
+    if not folder:
+        return None
+    props = read_properties(Path(folder) / "server.properties")
+    if props.get("enable-rcon", "").lower() != "true":
+        return None
+    pw = props.get("rcon.password", "")
+    if not pw:
+        return None
+    return ("127.0.0.1", int(props.get("rcon.port") or 25575), pw)
 
 
 @app.post("/api/server/command")
@@ -320,6 +451,15 @@ def api_server_command():
     cmd = (request.get_json(force=True).get("cmd") or "").strip()
     if not cmd:
         return jsonify({"error": "Empty command."}), 400
+    if getattr(SERVER, "adopted", False):  # no pipe; use RCON
+        rc = _server_rcon()
+        if not rc:
+            return jsonify({"error": "Enable RCON (enable-rcon=true + rcon.password) and "
+                            "restart the server to send commands to a reconnected server."}), 409
+        try:
+            return jsonify({"ok": True, "output": rcon_command(*rc, cmd)})
+        except (OSError, RconError) as e:
+            return jsonify({"error": f"RCON: {e}"}), 502
     SERVER.send(cmd)
     return jsonify({"ok": True})
 
@@ -330,6 +470,18 @@ def api_server_stop():
         return jsonify({"error": "No server running."}), 409
     threading.Thread(target=_graceful_stop, args=(SERVER,), daemon=True).start()
     return jsonify({"ok": True})
+
+
+def _adopted_console() -> list:
+    """Console for an adopted server, tailed from its logs/latest.log with the
+    noisy RCON client connect/disconnect thread lines filtered out."""
+    folder = SERVER_META.get("folder")
+    if folder:
+        lines = [ln for ln in _tail(Path(folder) / "logs" / "latest.log", n=600)
+                 if "RCON Client" not in ln and "RCON Listener" not in ln]
+        if lines:
+            return lines[-300:]
+    return list(SERVER.log) if SERVER else []
 
 
 @app.get("/api/server/status")
@@ -348,7 +500,11 @@ def api_server_status():
         "address": f"{host}:{port}",
         "uptime": format_duration(time.time() - SERVER.started_at),
         "metrics": SERVER.metrics(),
-        "log": list(SERVER.log),
+        # Owned servers stream via the captured pipe; adopted ones have no pipe,
+        # so read the console from the server's own logs/latest.log.
+        "log": _adopted_console() if getattr(SERVER, "adopted", False) else list(SERVER.log),
+        "adopted": getattr(SERVER, "adopted", False),
+        "rcon": _server_rcon() is not None,  # config-based; no probe (avoids log spam)
     }
     if not SERVER.stopping and is_server_up(host, port):
         resp["state"] = "online"
@@ -470,25 +626,30 @@ def _kill_existing_bots() -> int:
     return len(victims)
 
 
+def _launch_bot() -> int:
+    """Launch the bot (killing any existing one first). Returns replaced count."""
+    global BOT
+    killed = _kill_existing_bots()  # guard: no duplicate bots
+    popen = subprocess.Popen(
+        ["py", "bot.py"],
+        cwd=str(BOT_DIR),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        creationflags=NO_WINDOW,
+    )
+    BOT = Proc(popen, "discord-bot")
+    return killed
+
+
 @app.post("/api/bot/start")
 def api_bot_start():
-    global BOT
     with LOCK:
         if not (BOT_DIR / "bot.py").is_file():
             return jsonify({"error": f"bot.py not found in {BOT_DIR}"}), 404
-        killed = _kill_existing_bots()  # guard: no duplicate bots
-        popen = subprocess.Popen(
-            ["py", "bot.py"],
-            cwd=str(BOT_DIR),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            creationflags=NO_WINDOW,
-        )
-        BOT = Proc(popen, "discord-bot")
-        return jsonify({"ok": True, "replaced": killed})
+        return jsonify({"ok": True, "replaced": _launch_bot()})
 
 
 @app.post("/api/bot/stop")
@@ -562,10 +723,102 @@ def api_playit_stop():
     return jsonify(_playit_run("stop"))
 
 
+@app.post("/api/start-all")
+def api_start_all():
+    """Start everything: playit tunnel, Discord bot, and the last-used server."""
+    out = {"playit": "started" if _playit_run("start").get("ok") else "unavailable"}
+    with LOCK:
+        if BOT and BOT.alive():
+            out["bot"] = "already running"
+        elif (BOT_DIR / "bot.py").is_file():
+            _launch_bot()
+            out["bot"] = "started"
+        else:
+            out["bot"] = "bot.py not found"
+
+        if SERVER and SERVER.alive():
+            out["server"] = f"{SERVER_META.get('name')} already running"
+        else:
+            name = _load_state().get("last_server")
+            match = next((s for s in scan_servers(SERVERS_ROOT) if s["name"] == name), None) if name else None
+            if match and match["scripts"]:
+                script = _load_state().get("last_script")
+                if script not in match["scripts"]:
+                    script = match["scripts"][0]
+                _launch_server(match, script)
+                out["server"] = f"started {name}"
+            elif name:
+                out["server"] = f"last server '{name}' not found"
+            else:
+                out["server"] = "no server — pick one on the MC Server tab"
+    return jsonify({"ok": True, "result": out})
+
+
+@app.post("/api/stop-all")
+def api_stop_all():
+    """Stop everything: MC server (gracefully), Discord bot, and playit tunnel."""
+    if SERVER and SERVER.alive():
+        SERVER.stopping = True  # immediate UI feedback; worker does the real stop
+
+    def worker():
+        for fn in (_kill_existing_servers, _kill_existing_bots,
+                   lambda: _playit_run("stop")):
+            try:
+                fn()
+            except Exception:
+                pass
+
+    threading.Thread(target=worker, daemon=True).start()
+    return jsonify({"ok": True})
+
+
 def _ensure_playit():
     """Best-effort: bring the tunnel up on launch (no-op if already running)."""
     if PLAYIT_EXE.is_file():
         _playit_run("start")
+
+
+def _adopt_running():
+    """On reopen, reconnect to an already-running server/bot so the dashboard
+    reflects and can control them. Adopted processes have no console/stdin."""
+    global SERVER, SERVER_META, BOT
+    if not (SERVER and SERVER.alive()):
+        by_folder = {}
+        for pr in psutil.process_iter(["name", "cwd", "create_time"]):
+            try:
+                if _is_server_proc(pr.info["name"] or "", pr.info["cwd"] or "", str(SERVERS_ROOT)):
+                    by_folder.setdefault(Path(pr.info["cwd"]), []).append(pr)
+            except psutil.Error:
+                continue
+        if by_folder:
+            folder = max(by_folder,  # the most-recently-started server folder
+                         key=lambda f: max(p.info["create_time"] for p in by_folder[f]))
+            procs = by_folder[folder]
+            anchor = next((p for p in procs if (p.info["name"] or "").lower() == "cmd.exe"), procs[0])
+            props = read_properties(folder / "server.properties")
+            port = int(props.get("server-port") or 25565)
+            SERVER = AdoptedProc(anchor.pid, folder.name)
+            SERVER_META = {"name": folder.name, "port": port, "folder": str(folder),
+                           "query": props.get("enable-query", "").lower() == "true",
+                           "query_port": int(props.get("query.port") or port)}
+    if not (BOT and BOT.alive()):
+        best = None
+        for pr in psutil.process_iter(["name", "cmdline"]):
+            try:
+                if not _is_bot_cmdline(pr.info["cmdline"]):
+                    continue
+                try:
+                    if pr.cwd().lower() != str(BOT_DIR).lower():
+                        continue
+                except (psutil.Error, OSError):
+                    pass
+                if best is None or (pr.info["name"] or "").lower() == "python.exe":
+                    best = pr  # prefer the real interpreter over the py.exe launcher
+            except psutil.Error:
+                continue
+        if best:
+            BOT = AdoptedProc(best.pid, "discord-bot")
+    # playit is a Windows service; playit_status() already reflects it.
 
 
 # ---------- entrypoints ----------
@@ -594,6 +847,7 @@ def run_desktop():
 
 
 if __name__ == "__main__":
+    _adopt_running()  # reconnect to any server/bot already running
     threading.Thread(target=_ensure_playit, daemon=True).start()
     if "--web" in sys.argv:
         run_web()

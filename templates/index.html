@@ -8,12 +8,16 @@
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: #12151c; color: #e6e9ef; }
-  header { padding: 14px 24px 0; background: #0d1017; border-bottom: 1px solid #262c39; }
+  header { padding: 14px 24px 0; background: #0d1017; border-bottom: 1px solid #262c39; position: sticky; top: 0; z-index: 10; }
   header h1 { margin: 0 0 10px; font-size: 18px; }
   nav.tabs { display: flex; gap: 4px; }
   nav.tabs button { background: transparent; color: #93a0b5; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 9px 16px; cursor: pointer; font: inherit; font-weight: 600; }
   nav.tabs button:hover { color: #e6e9ef; }
   nav.tabs button.active { color: #e6e9ef; border-bottom-color: #3182ce; }
+  .header-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; padding-bottom: 8px; }
+  #start-all, #stop-all { border: 0; border-radius: 6px; padding: 6px 14px; font-weight: 600; cursor: pointer; color: #fff; }
+  #start-all { background: #2f855a; } #start-all:hover { background: #38a169; }
+  #stop-all { background: #b03b3b; } #stop-all:hover { background: #d14545; }
   main { padding: 16px 24px; }
   .tab[hidden] { display: none; }
   .card { background: #171b24; border: 1px solid #262c39; border-radius: 10px; padding: 16px; }
@@ -53,6 +57,10 @@
     <button data-tab="server">MC Server</button>
     <button data-tab="bot">Discord Bot</button>
     <button data-tab="playit">Playit</button>
+    <span class="header-actions">
+      <button id="start-all">Start All</button>
+      <button id="stop-all">Stop All</button>
+    </span>
   </nav>
 </header>
 <main>
@@ -201,7 +209,8 @@ function statusPanel(d) {
   if (d.state === 'offline') return '<span class="badge offline">offline</span>';
   const m = d.metrics || {}, p = d.players;
   const rows = [
-    ['', badge(d.state) + `  <button class="act danger" id="stop-btn">Stop</button>`],
+    ['', badge(d.state) + `  <button class="act danger" id="stop-btn">Stop</button>`
+        + (d.adopted ? ` <span class="muted">reconnected${d.rcon ? ' — commands via RCON' : ' — console read-only (enable RCON to send commands)'}</span>` : '')],
     ['Server', d.name || ''],
     ['Address', d.address || ''],
     ['Uptime', d.uptime || ''],
@@ -220,8 +229,11 @@ async function refreshStatus() {
   const emptyMsg = d.state === 'offline' ? 'No server running.' : '(waiting for output)';
   writeLog($('#server-log'), d.log, emptyMsg);
   writeLog($('#overview-server-log'), d.log, emptyMsg);
-  const active = d.state !== 'offline';
-  $('#cmd').disabled = !active; $('#cmd-send').disabled = !active;
+  const canCmd = d.state !== 'offline' && (!d.adopted || d.rcon);
+  $('#cmd').disabled = !canCmd; $('#cmd-send').disabled = !canCmd;
+  $('#cmd').placeholder = (d.adopted && !d.rcon)
+    ? 'Read-only console — enable RCON + restart to send commands to a reconnected server'
+    : 'Console command (e.g. say hello)';
   const stopBtn = $('#stop-btn');
   if (stopBtn) stopBtn.onclick = async () => { await api('/api/server/stop', {}); refreshStatus(); };
   renderOverview();
@@ -286,6 +298,21 @@ async function refreshPlayit() {
 }
 $('#playit-start').onclick = async () => { const r = await api('/api/playit/start', {}); if (r.error) alert(r.error); refreshPlayit(); };
 $('#playit-stop').onclick = async () => { const r = await api('/api/playit/stop', {}); if (r.error) alert(r.error); refreshPlayit(); };
+
+// --- header actions ---
+$('#start-all').onclick = async () => {
+  const r = await api('/api/start-all', {});
+  if (r.error) { alert(r.error); return; }
+  if (r.result && /^no server/.test(r.result.server || ''))
+    alert('Started bot + playit. No saved server yet — start one on the MC Server tab first.');
+  refreshServers(); tick();
+};
+$('#stop-all').onclick = async () => {
+  if (!confirm('Stop the Minecraft server, Discord bot, and playit tunnel?')) return;
+  const r = await api('/api/stop-all', {});
+  if (r.error) alert(r.error);
+  refreshServers(); tick();
+};
 
 // --- poll ---
 function tick() { refreshStatus(); refreshBot(); refreshPlayit(); }
