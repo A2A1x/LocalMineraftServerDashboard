@@ -38,6 +38,10 @@
   table.kv td { padding: 3px 0; vertical-align: top; }
   table.kv td.k { color: #93a0b5; width: 110px; }
   pre.log { background: #0b0e14; border: 1px solid #212834; border-radius: 6px; padding: 10px; height: 48vh; min-height: 220px; overflow: auto; margin: 10px 0 0; white-space: pre-wrap; font: 12px/1.45 ui-monospace, monospace; }
+  pre.log .error { color: #ff8a8a; }
+  pre.log .warn  { color: #ffd479; }
+  pre.log .debug { color: #7f8a9c; }
+  pre.log .info  { color: #cfd6e2; }
   .row { display: flex; gap: 8px; margin-top: 8px; }
   .row > input { flex: 1; }
   form.settings { display: grid; grid-template-columns: 120px 1fr; gap: 8px 10px; align-items: center; }
@@ -121,9 +125,19 @@
 <script>
 const $ = s => document.querySelector(s);
 const api = (u, body) => fetch(u, body ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)} : {}).then(r => r.json());
+const esc = s => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function logLevel(line) {
+  if (/\/(ERROR|FATAL|SEVERE)\]|\b(ERROR|FATAL|SEVERE)\b|Exception|Traceback/.test(line)) return 'error';
+  if (/\/(WARN|WARNING)\]|\b(WARN|WARNING)\b/.test(line)) return 'warn';
+  if (/\/(DEBUG|TRACE)\]|\b(DEBUG|TRACE)\b/.test(line)) return 'debug';
+  return 'info';
+}
 function writeLog(el, lines, empty) {
   const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-  el.textContent = (lines && lines.length) ? lines.join('\n') : empty;
+  if (lines && lines.length)
+    el.innerHTML = lines.map(l => `<span class="${logLevel(l)}">${esc(l)}</span>`).join('\n');
+  else
+    el.textContent = empty;
   if (atBottom) el.scrollTop = el.scrollHeight;
 }
 
@@ -157,14 +171,14 @@ function renderOverview() {
       : '<div class="big">—</div>'],
     ['Uptime', `<div class="big">${on ? (s.uptime || '—') : '—'}</div>`],
     ['CPU / RAM', on
-      ? `<div class="big">${m.cpu ?? 0}%</div><div class="muted">${m.mem_mb ?? 0} MB</div>`
+      ? `<div class="big">${m.cpu ?? 0}%</div><div class="muted">${m.mem_mb ?? 0} MB · ${m.threads ?? 0} threads</div>`
+      : '<div class="big">—</div>'],
+    ['TPS', on && s.tps
+      ? `<div class="big">${s.tps.tps}</div><div class="muted">${s.tps.mspt != null ? s.tps.mspt + ' ms/tick' : ''}</div>`
       : '<div class="big">—</div>'],
     ['Discord bot', b
       ? `${badge(b.running ? 'online' : 'offline')}<div class="muted" style="margin-top:6px">${b.running ? 'running' : 'stopped'}</div>`
       : '<div class="big">—</div>'],
-    ['Bot target', b
-      ? `<div class="muted">channel ${b.settings.CHANNEL_ID || '—'}<br>poll every ${b.settings.POLL_INTERVAL || '—'}s</div>`
-      : '<div class="muted">—</div>'],
     ['Playit tunnel', lastPlayit && !(lastPlayit.status || {}).error
       ? `${badge(lastPlayit.status.running ? 'online' : 'offline')}<div class="muted" style="margin-top:6px">${lastPlayit.status.running ? (lastPlayit.status.uptime ? 'up ' + lastPlayit.status.uptime : 'running') : (lastPlayit.status.phase || 'stopped')}</div>`
       : `<div class="big">—</div>`],
@@ -218,6 +232,10 @@ function statusPanel(d) {
     ['MOTD', d.motd || '—'],
     ['Players', p ? `${p.online}/${p.max}${p.names && p.names.length ? ' — ' + p.names.join(', ') : ''}` : '—'],
     ['CPU / RAM', `${m.cpu ?? 0}%  /  ${m.mem_mb ?? 0} MB`],
+    ['TPS', d.tps ? `${d.tps.tps} (1m)${d.tps.mspt != null ? '  ·  ' + d.tps.mspt + ' ms/tick' : ''}${d.tps.series ? '  [' + d.tps.series.join(', ') + ' @ 5s/10s/1m/5m/15m]' : ''}` : '— (spark only)'],
+    ['Threads', m.threads ?? '—'],
+    ['Disk I/O', `${m.disk_read ?? 0} MB/s read  ·  ${m.disk_write ?? 0} MB/s write`],
+    ['System RAM', d.system ? `${d.system.mem_used_gb} / ${d.system.mem_total_gb} GB  (${d.system.mem_pct}%)` : '—'],
   ];
   return `<table class="kv">${rows.map(([k, v]) => `<tr><td class="k">${k}</td><td>${v}</td></tr>`).join('')}</table>`;
 }

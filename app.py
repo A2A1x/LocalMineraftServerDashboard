@@ -188,6 +188,7 @@ class _Managed:
         self.stopping = False
         self.adopted = False
         self._pcache = {}  # pid -> psutil.Process, kept across polls for cpu deltas
+        self._io_prev = None  # (read_bytes, write_bytes, time) for disk I/O rate
 
     def kill_tree(self):
         try:
@@ -208,33 +209,51 @@ class _Managed:
                 pass
 
     def metrics(self) -> dict:
-        """CPU% (of the whole machine) and RAM (MB) over the process tree.
+        """Perf stats over the process tree: CPU% (machine-wide), RAM (MB), JVM
+        thread count, and disk read/write rate (MB/s).
 
-        cpu_percent(interval=None) is a delta since the previous call on the
-        *same* Process object, so we cache objects by pid across polls; the
-        first poll after a process appears reads 0 until the next sample.
+        cpu_percent(interval=None) and I/O are deltas since the previous call, so
+        we cache Process objects by pid across polls; the first poll after a
+        process appears reads 0 until the next sample.
         """
+        empty = {"cpu": 0.0, "mem_mb": 0.0, "threads": 0, "disk_read": 0.0, "disk_write": 0.0}
         try:
             parent = psutil.Process(self.pid)
             procs = {parent.pid: parent}
             for c in parent.children(recursive=True):
                 procs[c.pid] = c
         except psutil.Error:
-            return {"cpu": 0.0, "mem_mb": 0.0}
-        cpu = 0.0
-        mem = 0
+            return empty
+        cpu = mem = threads = rbytes = wbytes = 0
         cache = {}
         for pid, proc in procs.items():
-            p = self._pcache.get(pid, proc)  # reuse to keep the cpu baseline
+            p = self._pcache.get(pid, proc)  # reuse to keep the cpu/io baseline
             try:
                 cpu += p.cpu_percent(interval=None)
                 mem += p.memory_info().rss
+                threads += p.num_threads()
             except psutil.Error:
                 continue
+            try:
+                io = p.io_counters()
+                rbytes += io.read_bytes
+                wbytes += io.write_bytes
+            except (psutil.Error, AttributeError):
+                pass
             cache[pid] = p
         self._pcache = cache
+        now = time.time()
+        dr = dw = 0.0
+        if self._io_prev:
+            pr, pw, pt = self._io_prev
+            dt = now - pt
+            if dt > 0:
+                dr = max(0.0, (rbytes - pr) / dt / 1048576)
+                dw = max(0.0, (wbytes - pw) / dt / 1048576)
+        self._io_prev = (rbytes, wbytes, now)
         ncpu = psutil.cpu_count() or 1
-        return {"cpu": round(cpu / ncpu, 1), "mem_mb": round(mem / 1048576, 1)}
+        return {"cpu": round(cpu / ncpu, 1), "mem_mb": round(mem / 1048576, 1),
+                "threads": threads, "disk_read": round(dr, 2), "disk_write": round(dw, 2)}
 
 
 class Proc(_Managed):
@@ -388,7 +407,8 @@ def _remember_server(name: str, script: str):
 
 def _launch_server(match: dict, script: str) -> int:
     """Launch a server (killing any existing one first). Returns replaced count."""
-    global SERVER, SERVER_META
+    global SERVER, SERVER_META, SERVER_TPS
+    SERVER_TPS = {}  # drop the previous server's TPS
     killed = _kill_existing_servers()  # guard: only one server at a time
     folder = Path(match["path"])
     popen = subprocess.Popen(
@@ -472,16 +492,84 @@ def api_server_stop():
     return jsonify({"ok": True})
 
 
-def _adopted_console() -> list:
-    """Console for an adopted server, tailed from its logs/latest.log with the
-    noisy RCON client connect/disconnect thread lines filtered out."""
+_BOLT = "⚡"  # spark prefixes its output with a lightning bolt
+_NOISE = ("RCON Client", "RCON Listener", _BOLT)  # shown as metrics, not console
+
+
+def _console() -> list:
+    """The server console (last 300 lines): from the captured pipe for an owned
+    server or logs/latest.log for an adopted one, with RCON/spark noise removed."""
+    if getattr(SERVER, "adopted", False):
+        folder = SERVER_META.get("folder")
+        raw = _tail(Path(folder) / "logs" / "latest.log", n=600) if folder else []
+        if not raw:
+            raw = list(SERVER.log) if SERVER else []
+    else:
+        raw = list(SERVER.log) if SERVER else []
+    return [ln for ln in raw if not any(n in ln for n in _NOISE)][-300:]
+
+
+# ---------- TPS via spark ----------
+
+SERVER_TPS = {}  # {tps, series, mspt, at}
+
+
+def _has_spark(folder) -> bool:
+    try:
+        return any(p.name.lower().startswith("spark")
+                   for p in (Path(folder) / "mods").glob("*.jar"))
+    except OSError:
+        return False
+
+
+def _spark_payload(line: str) -> str:
+    m = re.search(re.escape("[" + _BOLT + "]") + r"\s*(.*)$", line)
+    return m.group(1) if m else ""
+
+
+def _parse_tps(lines) -> dict:
+    """Pull the most recent TPS series and median MSPT out of spark log lines."""
+    series = mspt = None
+    for i, ln in enumerate(lines):
+        if "TPS from last" in ln and i + 1 < len(lines):
+            nums = re.findall(r"\d+\.?\d*", _spark_payload(lines[i + 1]))
+            if nums:
+                series = [float(x) for x in nums]
+        elif "Tick durations" in ln and i + 1 < len(lines):
+            nums = re.findall(r"\d+\.?\d*", _spark_payload(lines[i + 1]).split(";")[0])
+            if len(nums) >= 2:
+                mspt = nums[1]  # median of the last 10s
+    tps = (series[2] if len(series) >= 3 else series[-1]) if series else None
+    return {"tps": tps, "series": series, "mspt": float(mspt) if mspt else None}
+
+
+def _refresh_tps():
+    """Ask spark for TPS over RCON, then read the result from the log."""
+    if not (SERVER and SERVER.alive()):
+        return
     folder = SERVER_META.get("folder")
-    if folder:
-        lines = [ln for ln in _tail(Path(folder) / "logs" / "latest.log", n=600)
-                 if "RCON Client" not in ln and "RCON Listener" not in ln]
-        if lines:
-            return lines[-300:]
-    return list(SERVER.log) if SERVER else []
+    rc = _server_rcon()
+    if not (folder and rc and _has_spark(folder)):
+        return
+    try:
+        rcon_command(*rc, "spark tps")
+    except (OSError, RconError):
+        return
+    time.sleep(2)  # spark writes its report from a worker thread a moment later
+    data = _parse_tps(_tail(Path(folder) / "logs" / "latest.log", n=60))
+    if data["tps"] is not None:
+        data["at"] = time.time()
+        global SERVER_TPS
+        SERVER_TPS = data
+
+
+def _tps_worker():
+    while True:
+        time.sleep(20)
+        try:
+            _refresh_tps()
+        except Exception:
+            pass
 
 
 @app.get("/api/server/status")
@@ -500,12 +588,16 @@ def api_server_status():
         "address": f"{host}:{port}",
         "uptime": format_duration(time.time() - SERVER.started_at),
         "metrics": SERVER.metrics(),
-        # Owned servers stream via the captured pipe; adopted ones have no pipe,
-        # so read the console from the server's own logs/latest.log.
-        "log": _adopted_console() if getattr(SERVER, "adopted", False) else list(SERVER.log),
+        "log": _console(),
         "adopted": getattr(SERVER, "adopted", False),
         "rcon": _server_rcon() is not None,  # config-based; no probe (avoids log spam)
     }
+    vm = psutil.virtual_memory()
+    resp["system"] = {"mem_pct": vm.percent,
+                      "mem_used_gb": round(vm.used / 1073741824, 1),
+                      "mem_total_gb": round(vm.total / 1073741824, 1)}
+    if SERVER_TPS.get("tps") is not None and time.time() - SERVER_TPS.get("at", 0) < 90:
+        resp["tps"] = {k: SERVER_TPS.get(k) for k in ("tps", "mspt", "series")}
     if not SERVER.stopping and is_server_up(host, port):
         resp["state"] = "online"
         got_names = False
@@ -849,6 +941,7 @@ def run_desktop():
 if __name__ == "__main__":
     _adopt_running()  # reconnect to any server/bot already running
     threading.Thread(target=_ensure_playit, daemon=True).start()
+    threading.Thread(target=_tps_worker, daemon=True).start()  # spark TPS polling
     if "--web" in sys.argv:
         run_web()
     else:
