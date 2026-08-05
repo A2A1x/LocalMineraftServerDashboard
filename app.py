@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 import webbrowser
 import zipfile
 from collections import deque
@@ -25,6 +26,11 @@ DEFAULTS = {
     "playit_log": r"C:\ProgramData\playit_gg\logs\playitd.log",
     "playit_address": "wherein-sins.tun.ply.gg",  # the address players join
     "backup_keep": 10,  # how many world backups to retain
+    "restart_time": "",  # daily restart "HH:MM" (24h); "" disables
+    "auto_restart": True,  # relaunch a server if it dies unexpectedly (crash)
+    "tps_alert": 12.0,  # warn when TPS drops below this; 0 disables
+    "disk_alert_gb": 2.0,  # warn when free space on the servers drive drops below this
+    "discord_alerts": False,  # also post alerts to the bot's Discord channel
     "host": "127.0.0.1",
     "port": 8765,
 }
@@ -46,6 +52,11 @@ PLAYIT_EXE = Path(CONFIG["playit_exe"])
 PLAYIT_LOG = Path(CONFIG["playit_log"])
 PLAYIT_ADDRESS = CONFIG["playit_address"]
 BACKUP_KEEP = int(CONFIG["backup_keep"])
+RESTART_TIME = str(CONFIG["restart_time"]).strip()
+AUTO_RESTART = bool(CONFIG["auto_restart"])
+TPS_ALERT = float(CONFIG["tps_alert"])
+DISK_ALERT_GB = float(CONFIG["disk_alert_gb"])
+DISCORD_ALERTS = bool(CONFIG["discord_alerts"])
 
 # Launch children without flashing a console window (matters under pythonw).
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
@@ -414,6 +425,7 @@ def _launch_server(match: dict, script: str) -> int:
     """Launch a server (killing any existing one first). Returns replaced count."""
     global SERVER, SERVER_META, SERVER_TPS
     SERVER_TPS = {}  # drop the previous server's TPS
+    HISTORY.clear()  # drop the previous server's history
     killed = _kill_existing_servers()  # guard: only one server at a time
     folder = Path(match["path"])
     popen = subprocess.Popen(
@@ -875,6 +887,7 @@ def api_server_status():
                 resp["motd"] = str(getattr(st, "description", ""))
         except Exception:
             pass  # port open but full ping not ready yet
+    _maybe_sample(resp)
     return jsonify(resp)
 
 
@@ -1117,6 +1130,133 @@ def _ensure_playit():
         _playit_run("start")
 
 
+# ---------- history, alerts, supervisor ----------
+
+HISTORY = deque(maxlen=240)   # ~40 min at 10s: {t, cpu, mem_mb, players, tps}
+ALERTS = deque(maxlen=50)     # {text, level, at}
+_alert_state = {}             # dedup: only alert on the falling edge
+_last_sample = [0.0]
+_restart_fired = None
+_last_autorestart = 0.0
+
+
+def _discord_notify(text: str, level: str = "warn"):
+    """Post an alert to the bot's channel as the bot (REST API, bot token)."""
+    try:
+        env = {}
+        for line in _bot_env_path().read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, _, v = line.partition("=")
+                env[k.strip()] = v.strip()
+        token, ch = env.get("DISCORD_TOKEN"), env.get("CHANNEL_ID")
+        if not (token and ch):
+            return
+        color = 0xED4245 if level == "error" else 0xFEE75C  # brand red / yellow
+        payload = {"embeds": [{"title": "⚠️ Server Alert", "description": text, "color": color}]}
+        req = urllib.request.Request(
+            f"https://discord.com/api/v10/channels/{ch}/messages",
+            data=json.dumps(payload).encode(),
+            headers={"Authorization": f"Bot {token}", "Content-Type": "application/json",
+                     "User-Agent": "mc-dashboard"}, method="POST")
+        urllib.request.urlopen(req, timeout=8)
+    except Exception:
+        pass
+
+
+def _alert(text: str, level: str = "warn"):
+    ALERTS.append({"text": text, "level": level, "at": time.time()})
+    if DISCORD_ALERTS:
+        threading.Thread(target=_discord_notify, args=(text, level), daemon=True).start()
+
+
+def _maybe_sample(resp: dict):
+    """Append a history point (throttled) from an already-computed status resp."""
+    if resp.get("state") not in ("online", "starting"):
+        return
+    now = time.time()
+    if now - _last_sample[0] < 10:
+        return
+    _last_sample[0] = now
+    m = resp.get("metrics") or {}
+    HISTORY.append({"t": now, "cpu": m.get("cpu", 0), "mem_mb": m.get("mem_mb", 0),
+                    "players": (resp.get("players") or {}).get("online", 0),
+                    "tps": (resp.get("tps") or {}).get("tps")})
+
+
+def _restart_with_countdown():
+    name = SERVER_META.get("name")
+    match = _server_by_name(name)
+    script = _load_state().get("last_script")
+    for secs, wait in ((60, 30), (30, 20), (10, 10)):
+        _send_command(f"say Scheduled restart in {secs} seconds")
+        time.sleep(wait)
+    if SERVER:
+        _graceful_stop(SERVER)
+    if match and match["scripts"]:
+        _launch_server(match, script if script in match["scripts"] else match["scripts"][0])
+        _alert(f"Scheduled restart of '{name}'", "info")
+
+
+def _supervisor():
+    """Auto-restart a crashed server and run the daily scheduled restart."""
+    global _restart_fired, _last_autorestart
+    while True:
+        time.sleep(15)
+        try:
+            s = SERVER
+            if (AUTO_RESTART and s and not s.alive() and not s.stopping
+                    and not getattr(s, "_crash_handled", False)):
+                s._crash_handled = True
+                name = SERVER_META.get("name")
+                match = _server_by_name(name)
+                if time.time() - _last_autorestart < 30:
+                    _alert(f"'{name}' died again too soon — not auto-restarting", "error")
+                elif match and match["scripts"]:
+                    script = _load_state().get("last_script")
+                    _last_autorestart = time.time()
+                    _alert(f"'{name}' crashed — auto-restarting", "error")
+                    _launch_server(match, script if script in match["scripts"] else match["scripts"][0])
+            if RESTART_TIME and SERVER and SERVER.alive():
+                key = time.strftime("%Y-%m-%d %H:%M")
+                if time.strftime("%H:%M") == RESTART_TIME and _restart_fired != key:
+                    _restart_fired = key
+                    threading.Thread(target=_restart_with_countdown, daemon=True).start()
+        except Exception:
+            pass
+
+
+def _alerts_worker():
+    while True:
+        time.sleep(30)
+        try:
+            if TPS_ALERT and SERVER and SERVER.alive():
+                fresh = time.time() - SERVER_TPS.get("at", 0) < 120
+                tps = SERVER_TPS.get("tps") if fresh else None
+                low = tps is not None and tps < TPS_ALERT
+                if low and not _alert_state.get("tps_low"):
+                    _alert(f"Low TPS: {tps} (below {TPS_ALERT})")
+                _alert_state["tps_low"] = low
+            if DISK_ALERT_GB:
+                free = psutil.disk_usage(str(SERVERS_ROOT)).free / 1073741824
+                low = free < DISK_ALERT_GB
+                if low and not _alert_state.get("disk_low"):
+                    _alert(f"Low disk space: {free:.1f} GB free on the servers drive", "error")
+                _alert_state["disk_low"] = low
+        except Exception:
+            pass
+
+
+@app.get("/api/history")
+def api_history():
+    return jsonify({"history": list(HISTORY)})
+
+
+@app.get("/api/alerts")
+def api_alerts():
+    return jsonify({"alerts": list(ALERTS)})
+
+
 def _adopt_running():
     """On reopen, reconnect to an already-running server/bot so the dashboard
     reflects and can control them. Adopted processes have no console/stdin."""
@@ -1189,6 +1329,8 @@ if __name__ == "__main__":
     _adopt_running()  # reconnect to any server/bot already running
     threading.Thread(target=_ensure_playit, daemon=True).start()
     threading.Thread(target=_tps_worker, daemon=True).start()  # spark TPS polling
+    threading.Thread(target=_supervisor, daemon=True).start()  # crash/scheduled restart
+    threading.Thread(target=_alerts_worker, daemon=True).start()  # TPS/disk alerts
     if "--web" in sys.argv:
         run_web()
     else:

@@ -3,6 +3,11 @@
   "bot_dir": "C:\\Users\\jaalf\\Documents\\Github\\MinecraftServerDiscordBot",
   "playit_address": "wherein-sins.tun.ply.gg",
   "backup_keep": 10,
+  "restart_time": "",
+  "auto_restart": true,
+  "tps_alert": 12.0,
+  "disk_alert_gb": 2.0,
+  "discord_alerts": true,
   "host": "127.0.0.1",
   "port": 8765
 }

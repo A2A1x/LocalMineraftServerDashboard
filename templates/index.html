@@ -54,6 +54,7 @@
   .pbtn:hover { background: #2e3d56; }
   .pbtn.danger { background: #5a2a2a; } .pbtn.danger:hover { background: #7a3636; }
   .act:disabled, .pbtn:disabled { opacity: .4; cursor: not-allowed; }
+  #alerts div { padding: 2px 0; } .a-warn { color: #ffd479; } .a-err { color: #ff8a8a; }
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
   .tile { background: #171b24; border: 1px solid #262c39; border-radius: 10px; padding: 14px 16px; }
   .tile-k { color: #93a0b5; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 6px; }
@@ -78,6 +79,14 @@
 <main>
   <section id="tab-overview" class="tab">
     <div class="tiles" id="overview-tiles"></div>
+    <div class="card" style="margin-top:16px">
+      <h2>History (last ~40 min)</h2>
+      <div id="history" class="tiles"></div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h2>Alerts</h2>
+      <div id="alerts" class="muted">No alerts.</div>
+    </div>
     <div class="card" style="margin-top:16px">
       <h2>MC Server Console</h2>
       <pre class="log" id="overview-server-log">No server running.</pre>
@@ -511,8 +520,39 @@ $('#cfg-mem-save').onclick = async () => {
   if (r.error) alert(r.error); else { b.textContent = 'Saved ✓'; setTimeout(() => b.textContent = 'Save memory', 1500); }
 };
 
+// --- history + alerts ---
+function sparkline(vals, color, w = 200, h = 40) {
+  const nums = vals.filter(v => v != null);
+  if (nums.length < 2) return '<div class="muted">collecting…</div>';
+  const min = Math.min(...nums), max = Math.max(...nums), span = (max - min) || 1, n = vals.length;
+  const pts = vals.map((v, i) => v == null ? null
+    : `${(i / (n - 1) * w).toFixed(1)},${(h - (v - min) / span * (h - 4) - 2).toFixed(1)}`).filter(Boolean).join(' ');
+  return `<svg width="100%" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><polyline fill="none" stroke="${color}" stroke-width="1.5" points="${pts}"/></svg>`;
+}
+async function refreshHistory() {
+  const hist = (await api('/api/history')).history || [];
+  const el = $('#history');
+  if (!hist.length) { el.innerHTML = '<span class="muted">Collecting… (keep a server running)</span>'; return; }
+  const series = [
+    ['CPU %', hist.map(p => p.cpu), '#7aa2f7'],
+    ['RAM MB', hist.map(p => p.mem_mb), '#7ee2a0'],
+    ['Players', hist.map(p => p.players), '#ffd479'],
+    ['TPS', hist.map(p => p.tps), '#c792ea'],
+  ];
+  el.innerHTML = series.map(([label, vals, color]) => {
+    const last = [...vals].reverse().find(v => v != null);
+    return `<div class="tile"><div class="tile-k">${label}</div><div class="big">${last != null ? last : '—'}</div>${sparkline(vals, color)}</div>`;
+  }).join('');
+}
+async function refreshAlerts() {
+  const a = (await api('/api/alerts')).alerts || [];
+  $('#alerts').innerHTML = a.length
+    ? a.slice(-10).reverse().map(x => `<div><span class="${x.level === 'error' ? 'a-err' : 'a-warn'}">${new Date(x.at * 1000).toLocaleTimeString()}</span> ${esc(x.text)}</div>`).join('')
+    : 'No alerts.';
+}
+
 // --- poll ---
-function tick() { refreshStatus(); refreshBot(); refreshPlayit(); refreshBackup(); }
+function tick() { refreshStatus(); refreshBot(); refreshPlayit(); refreshBackup(); refreshHistory(); refreshAlerts(); }
 refreshServers(); tick();
 setInterval(() => { refreshServers(); tick(); }, 2000);
 </script>
