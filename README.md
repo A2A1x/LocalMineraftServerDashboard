@@ -1,7 +1,7 @@
 # Local Minecraft Server Dashboard
 
 A native Windows desktop app (Flask UI in a `pywebview` window) to run and monitor your local
-Minecraft servers, plus the companion [Discord bot](../MinecraftServerDiscordBot) and a
+Minecraft servers, plus the companion [Discord bot](https://github.com/A2A1x/MinecraftServerDiscordBot) and a
 [playit.gg](https://playit.gg) tunnel — all from one screen.
 
 Features:
