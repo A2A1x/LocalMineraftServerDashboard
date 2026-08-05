@@ -20,11 +20,11 @@ from mcstatus import JavaServer
 HERE = Path(__file__).resolve().parent
 
 DEFAULTS = {
-    "servers_root": r"C:\Users\jaalf\OneDrive\Desktop\Minecraft Servers",
-    "bot_dir": r"C:\Users\jaalf\Documents\Github\MinecraftServerDiscordBot",
+    "servers_root": r"C:\path\to\Minecraft Servers",  # set in config.json
+    "bot_dir": r"C:\path\to\MinecraftServerDiscordBot",  # set in config.json
     "playit_exe": r"C:\Program Files\playit_gg\bin\playit.exe",
     "playit_log": r"C:\ProgramData\playit_gg\logs\playitd.log",
-    "playit_address": "wherein-sins.tun.ply.gg",  # the address players join
+    "playit_address": "",  # the address players join (set in config.json)
     "backup_keep": 10,  # how many world backups to retain
     "restart_time": "",  # daily restart "HH:MM" (24h); "" disables
     "auto_restart": True,  # relaunch a server if it dies unexpectedly (crash)

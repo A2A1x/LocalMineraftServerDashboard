@@ -1,0 +1,15 @@
+{
+  "servers_root": "C:\\path\\to\\Minecraft Servers",
+  "bot_dir": "C:\\path\\to\\MinecraftServerDiscordBot",
+  "playit_exe": "C:\\Program Files\\playit_gg\\bin\\playit.exe",
+  "playit_log": "C:\\ProgramData\\playit_gg\\logs\\playitd.log",
+  "playit_address": "your-tunnel.tun.ply.gg",
+  "backup_keep": 10,
+  "restart_time": "",
+  "auto_restart": true,
+  "tps_alert": 12.0,
+  "disk_alert_gb": 2.0,
+  "discord_alerts": false,
+  "host": "127.0.0.1",
+  "port": 8765
+}

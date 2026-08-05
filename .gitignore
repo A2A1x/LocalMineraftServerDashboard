@@ -1,1 +1,7 @@
-/__pycache__
+__pycache__/
+*.pyc
+.venv/
+# machine-specific / runtime — keep local, never publish
+config.json
+state.json
+.env
