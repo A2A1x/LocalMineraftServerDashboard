@@ -31,6 +31,8 @@ DEFAULTS = {
     "tps_alert": 12.0,  # warn when TPS drops below this; 0 disables
     "disk_alert_gb": 2.0,  # warn when free space on the servers drive drops below this
     "discord_alerts": False,  # also post alerts to the bot's Discord channel
+    "idle_shutdown_min": 15,  # stop the server after this many minutes with no players; 0 disables
+    "idle_grace_min": 5,  # don't start the idle clock until the server's been up this long
     "host": "127.0.0.1",
     "port": 8765,
 }
@@ -57,6 +59,8 @@ AUTO_RESTART = bool(CONFIG["auto_restart"])
 TPS_ALERT = float(CONFIG["tps_alert"])
 DISK_ALERT_GB = float(CONFIG["disk_alert_gb"])
 DISCORD_ALERTS = bool(CONFIG["discord_alerts"])
+IDLE_SHUTDOWN_MIN = float(CONFIG["idle_shutdown_min"])
+IDLE_GRACE_MIN = float(CONFIG["idle_grace_min"])
 
 # Launch children without flashing a console window (matters under pythonw).
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
@@ -340,13 +344,14 @@ def _graceful_stop(proc: _Managed, timeout: float = 90.0):
                 pass
         if proc.alive():
             proc.kill_tree()
-        return
-    proc.send("stop")
-    deadline = time.time() + timeout
-    while proc.alive() and time.time() < deadline:
-        time.sleep(1)
-    if proc.alive():
-        proc.kill_tree()
+    else:
+        proc.send("stop")
+        deadline = time.time() + timeout
+        while proc.alive() and time.time() < deadline:
+            time.sleep(1)
+        if proc.alive():
+            proc.kill_tree()
+    _playit_run("stop")  # the tunnel follows the server down
 
 
 # ---------- Flask ----------
@@ -423,9 +428,10 @@ def _remember_server(name: str, script: str):
 
 def _launch_server(match: dict, script: str) -> int:
     """Launch a server (killing any existing one first). Returns replaced count."""
-    global SERVER, SERVER_META, SERVER_TPS
+    global SERVER, SERVER_META, SERVER_TPS, _empty_since, _idle_alerted
     SERVER_TPS = {}  # drop the previous server's TPS
     HISTORY.clear()  # drop the previous server's history
+    _empty_since, _idle_alerted = None, False  # reset idle timer for the new server
     killed = _kill_existing_servers()  # guard: only one server at a time
     folder = Path(match["path"])
     popen = subprocess.Popen(
@@ -450,6 +456,7 @@ def _launch_server(match: dict, script: str) -> int:
         "query_port": int(props.get("query.port") or match["port"]),
     }
     _remember_server(match["name"], script)  # for Start All next time
+    _playit_run("start")  # the tunnel comes up with the server
     return killed
 
 
@@ -494,6 +501,26 @@ def _send_command(cmd: str):
             return False, f"RCON: {e}"
     SERVER.send(cmd)
     return True, ""
+
+
+@app.post("/api/server/start-last")
+def api_server_start_last():
+    """Start the last-used server (+ ensure playit). Does NOT touch the bot — used
+    by the bot's /startserver approval flow, which must not restart itself."""
+    with LOCK:
+        if SERVER and SERVER.alive():
+            return jsonify({"ok": True, "server": SERVER_META.get("name"), "already_running": True})
+        st = _load_state()
+        match = _server_by_name(st.get("last_server"))
+        if not (match and match["scripts"]):
+            return jsonify({"error": "No last-used server to start — start one from the dashboard first."}), 409
+        script = st.get("last_script")
+        if script not in match["scripts"]:
+            script = match["scripts"][0]
+        _launch_server(match, script)
+        name = match["name"]
+    _playit_run("start")  # idempotent; make sure the tunnel is up
+    return jsonify({"ok": True, "server": name})
 
 
 @app.post("/api/server/command")
@@ -1124,10 +1151,27 @@ def api_stop_all():
     return jsonify({"ok": True})
 
 
+@app.post("/api/stop-server-playit")
+def api_stop_server_playit():
+    """Stop the MC server (gracefully) and the playit tunnel; leave the bot running."""
+    if SERVER and SERVER.alive():
+        SERVER.stopping = True
+
+    def worker():
+        for fn in (_kill_existing_servers, lambda: _playit_run("stop")):
+            try:
+                fn()
+            except Exception:
+                pass
+
+    threading.Thread(target=worker, daemon=True).start()
+    return jsonify({"ok": True})
+
+
 def _ensure_playit():
-    """Best-effort: bring the tunnel up on launch (no-op if already running)."""
+    """On launch, match the tunnel to the server: up if one is running, else down."""
     if PLAYIT_EXE.is_file():
-        _playit_run("start")
+        _playit_run("start" if (SERVER and SERVER.alive()) else "stop")
 
 
 # ---------- history, alerts, supervisor ----------
@@ -1247,6 +1291,67 @@ def _alerts_worker():
             pass
 
 
+# ---------- idle auto-shutdown ----------
+
+_empty_since = None   # timestamp the running server first had 0 players
+_idle_alerted = False
+
+
+def _online_count():
+    """Online player count of the running server, or None if it can't be read."""
+    if not (SERVER and SERVER.alive()):
+        return None
+    try:
+        return JavaServer("127.0.0.1", SERVER_META.get("port", 25565), timeout=3).status().players.online
+    except Exception:
+        return None
+
+
+def _idle_action(online, empty_since, alerted, now, threshold_s):
+    """Decide what the idle watcher should do. Pure -> unit-testable.
+    Returns (action, new_empty_since, new_alerted); action in
+    {'none','reset','alert','shutdown'}."""
+    if online is None:
+        return ("none", empty_since, alerted)     # unknown; keep state
+    if online > 0:
+        return ("reset", None, False)             # someone's on; cancel any timer
+    if empty_since is None:
+        return ("alert", now, True)               # just went empty -> warn once
+    if now - empty_since >= threshold_s:
+        return ("shutdown", None, False)
+    return ("none", empty_since, alerted)
+
+
+def _idle_tick(now=None):
+    """One idle-watch cycle; performs the decided action. Returns the action."""
+    global _empty_since, _idle_alerted
+    now = now if now is not None else time.time()
+    if not IDLE_SHUTDOWN_MIN or not (SERVER and SERVER.alive()) or SERVER.stopping:
+        _empty_since, _idle_alerted = None, False
+        return "inactive"
+    if now - SERVER.started_at < IDLE_GRACE_MIN * 60:  # grace period after startup
+        _empty_since, _idle_alerted = None, False
+        return "grace"
+    action, _empty_since, _idle_alerted = _idle_action(
+        _online_count(), _empty_since, _idle_alerted, now, IDLE_SHUTDOWN_MIN * 60)
+    if action == "alert":
+        _alert(f"No players online - the server will shut down in "
+               f"{IDLE_SHUTDOWN_MIN:g} min if it stays empty")
+    elif action == "shutdown":
+        _alert(f"No players for {IDLE_SHUTDOWN_MIN:g} min - shutting the server down")
+        _graceful_stop(SERVER)
+    return action
+
+
+def _idle_watch():
+    while True:
+        time.sleep(30)
+        try:
+            _idle_tick()
+        except Exception:
+            pass
+
+
 @app.get("/api/history")
 def api_history():
     return jsonify({"history": list(HISTORY)})
@@ -1331,6 +1436,7 @@ if __name__ == "__main__":
     threading.Thread(target=_tps_worker, daemon=True).start()  # spark TPS polling
     threading.Thread(target=_supervisor, daemon=True).start()  # crash/scheduled restart
     threading.Thread(target=_alerts_worker, daemon=True).start()  # TPS/disk alerts
+    threading.Thread(target=_idle_watch, daemon=True).start()  # idle auto-shutdown
     if "--web" in sys.argv:
         run_web()
     else:

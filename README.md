@@ -61,6 +61,7 @@ copy config.example.json config.json
 | `backup_keep` | How many world backups to retain |
 | `restart_time` / `auto_restart` | Daily restart `HH:MM` (blank = off); relaunch on crash |
 | `tps_alert` / `disk_alert_gb` / `discord_alerts` | Alert thresholds; also post alerts to Discord |
+| `idle_shutdown_min` / `idle_grace_min` | Stop the server after N min with no players (0 = off); ignore the first `idle_grace_min` after startup |
 | `playit_exe` / `playit_log` | Paths to the playit CLI and its log (defaults are the standard install) |
 | `host` / `port` | Where the dashboard listens |
 
@@ -73,6 +74,8 @@ memory, mods).
 
 ## Notes
 
+- The **playit tunnel follows the server**: it comes up when a server starts and goes down
+  when the server stops (so the machine isn't tunnelling to a dead origin).
 - Only one server runs at a time (they default to port 25565). Starting one stops any other.
 - Bot settings are written to the bot's `.env`; your `DISCORD_TOKEN` is preserved and never shown.
 - Editing a **running** server's `server.properties` only takes effect on restart and may be

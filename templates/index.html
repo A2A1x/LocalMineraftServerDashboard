@@ -15,8 +15,9 @@
   nav.tabs button:hover { color: #e6e9ef; }
   nav.tabs button.active { color: #e6e9ef; border-bottom-color: #3182ce; }
   .header-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; padding-bottom: 8px; }
-  #start-all, #stop-all { border: 0; border-radius: 6px; padding: 6px 14px; font-weight: 600; cursor: pointer; color: #fff; }
+  #start-all, #stop-mc, #stop-all { border: 0; border-radius: 6px; padding: 6px 14px; font-weight: 600; cursor: pointer; color: #fff; }
   #start-all { background: #2f855a; } #start-all:hover { background: #38a169; }
+  #stop-mc { background: #b0742f; } #stop-mc:hover { background: #c98a3f; }
   #stop-all { background: #b03b3b; } #stop-all:hover { background: #d14545; }
   main { padding: 16px 24px; }
   .tab[hidden] { display: none; }
@@ -72,6 +73,7 @@
     <button data-tab="config">Config</button>
     <span class="header-actions">
       <button id="start-all">Start All</button>
+      <button id="stop-mc">Stop Server + Tunnel</button>
       <button id="stop-all">Stop All</button>
     </span>
   </nav>
@@ -457,6 +459,12 @@ $('#start-all').onclick = async () => {
   if (r.error) { alert(r.error); return; }
   if (r.result && /^no server/.test(r.result.server || ''))
     alert('Started bot + playit. No saved server yet — start one on the MC Server tab first.');
+  refreshServers(); tick();
+};
+$('#stop-mc').onclick = async () => {
+  if (!confirm('Stop the Minecraft server and playit tunnel? (the Discord bot stays running)')) return;
+  const r = await api('/api/stop-server-playit', {});
+  if (r.error) alert(r.error);
   refreshServers(); tick();
 };
 $('#stop-all').onclick = async () => {

@@ -149,6 +149,21 @@ def test_prune_backups():
         assert left == {"world-2.zip", "world-3.zip", "world-4.zip"}, left  # newest 3 kept
 
 
+def test_idle_action():
+    from app import _idle_action
+    T = 15 * 60
+    # unknown player count -> keep state
+    assert _idle_action(None, 100.0, True, 200.0, T) == ("none", 100.0, True)
+    # players online -> reset the timer
+    assert _idle_action(3, 100.0, True, 200.0, T) == ("reset", None, False)
+    # just went empty -> warn once, start the clock
+    assert _idle_action(0, None, False, 500.0, T) == ("alert", 500.0, True)
+    # still empty, under threshold -> nothing
+    assert _idle_action(0, 500.0, True, 500.0 + 60, T) == ("none", 500.0, True)
+    # empty past threshold -> shutdown
+    assert _idle_action(0, 500.0, True, 500.0 + T, T)[0] == "shutdown"
+
+
 def test_jvm_memory():
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)
@@ -170,5 +185,6 @@ if __name__ == "__main__":
     test_rcon_roundtrip()
     test_valid_player_name()
     test_prune_backups()
+    test_idle_action()
     test_jvm_memory()
     print("all tests passed")
