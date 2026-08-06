@@ -4,6 +4,8 @@ A native Windows desktop app (Flask UI in a `pywebview` window) to run and monit
 Minecraft servers, plus the companion [Discord bot](https://github.com/A2A1x/MinecraftServerDiscordBot) and a
 [playit.gg](https://playit.gg) tunnel — all from one screen.
 
+![Dashboard - Overview tab](docs/dashboard.png)
+
 Features:
 
 - **Launch/stop** any server folder (one at a time), with a clean `stop` (world-save) before
