@@ -779,7 +779,7 @@ def api_server_stop():
 
 
 _BOLT = "⚡"  # spark prefixes its output with a lightning bolt
-_NOISE = ("RCON Client", "RCON Listener", _BOLT)  # shown as metrics, not console
+_NOISE = ("RCON Client", "RCON Listener", _BOLT, "spark-worker")  # shown as metrics, not console
 
 
 def _console() -> list:
