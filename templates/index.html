@@ -161,6 +161,12 @@
     <div class="card">
       <h2>Server Config</h2>
       <div class="row" style="align-items:center">
+        <span class="muted">Servers folder</span>
+        <input id="cfg-root" style="flex:1" placeholder="C:\path\to\Minecraft Servers">
+        <button class="act" id="cfg-root-browse">Browse…</button>
+        <button class="act" id="cfg-root-save">Save</button>
+      </div>
+      <div class="row" style="align-items:center">
         <span class="muted">Server</span>
         <select id="cfg-server"></select>
         <span id="cfg-running" class="muted"></span>
@@ -209,7 +215,7 @@ document.querySelectorAll('nav.tabs button[data-tab]').forEach(btn => {
   btn.onclick = () => {
     document.querySelectorAll('nav.tabs button[data-tab]').forEach(b => b.classList.toggle('active', b === btn));
     document.querySelectorAll('.tab').forEach(t => t.hidden = t.id !== 'tab-' + btn.dataset.tab);
-    if (btn.dataset.tab === 'config') loadConfigServers().then(loadConfig);
+    if (btn.dataset.tab === 'config') { loadRoot(); loadConfigServers().then(loadConfig); }
   };
 });
 
@@ -489,6 +495,22 @@ async function loadConfigServers() {
   sel.innerHTML = servers.map(s => `<option>${esc(s.name)}</option>`).join('');
   if (cur && servers.some(s => s.name === cur)) sel.value = cur;
 }
+async function loadRoot() {
+  const d = await api('/api/settings');
+  if (d.servers_root) $('#cfg-root').value = d.servers_root;
+}
+$('#cfg-root-browse').onclick = async () => {
+  const r = await api('/api/pick-folder', {});
+  if (r.error) { alert(r.error); return; }
+  if (r.path) $('#cfg-root').value = r.path;
+};
+$('#cfg-root-save').onclick = async () => {
+  const r = await api('/api/settings', { servers_root: $('#cfg-root').value.trim() });
+  if (r.error) { alert(r.error); return; }
+  const b = $('#cfg-root-save');
+  b.textContent = `Saved ✓ (${r.count} servers)`; setTimeout(() => b.textContent = 'Save', 2000);
+  refreshServers(); loadConfigServers().then(loadConfig);
+};
 async function loadConfig() {
   const name = $('#cfg-server').value;
   if (!name) return;

@@ -71,8 +71,8 @@ copy config.example.json config.json
 
 **Overview** (status tiles, history graphs, alerts, console) · **MC Server** (start/stop,
 console, commands, players, quick actions, backups) · **Discord Bot** (start/stop + `.env`
-settings) · **Playit** (tunnel control + log) · **Config** (per-server `server.properties`,
-memory, mods).
+settings) · **Playit** (tunnel control + log) · **Config** (pick the servers folder; per-server
+`server.properties`, memory, mods).
 
 ## Notes
 

@@ -47,6 +47,16 @@ def load_config():
     return cfg
 
 
+def save_config(updates: dict):
+    """Merge updates into config.json (preserving other keys)."""
+    try:
+        cfg = json.loads((HERE / "config.json").read_text())
+    except (OSError, ValueError):
+        cfg = {}
+    cfg.update(updates)
+    (HERE / "config.json").write_text(json.dumps(cfg, indent=2) + "\n")
+
+
 CONFIG = load_config()
 BOT_DIR = Path(CONFIG["bot_dir"])
 SERVERS_ROOT = Path(CONFIG["servers_root"])
@@ -368,6 +378,39 @@ def index():
 def api_servers():
     running = SERVER_META.get("name") if SERVER and SERVER.alive() else None
     return jsonify({"servers": scan_servers(SERVERS_ROOT), "running": running})
+
+
+@app.get("/api/settings")
+def api_get_settings():
+    return jsonify({"servers_root": str(SERVERS_ROOT), "bot_dir": str(BOT_DIR)})
+
+
+@app.post("/api/settings")
+def api_set_settings():
+    global SERVERS_ROOT
+    root = (request.get_json(force=True).get("servers_root") or "").strip()
+    if not root:
+        return jsonify({"error": "Empty path."}), 400
+    p = Path(root)
+    if not p.is_dir():
+        return jsonify({"error": f"Not a folder: {root}"}), 400
+    SERVERS_ROOT = p               # live: subsequent scans use the new folder
+    save_config({"servers_root": str(p)})
+    return jsonify({"ok": True, "servers_root": str(p), "count": len(scan_servers(p))})
+
+
+@app.post("/api/pick-folder")
+def api_pick_folder():
+    """Open the native folder picker (desktop app only)."""
+    try:
+        import webview
+        if not webview.windows:
+            return jsonify({"error": "Folder picker is only available in the desktop app; "
+                            "type the path instead."}), 400
+        result = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG)
+        return jsonify({"ok": True, "path": (result[0] if result else None)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 def _is_server_proc(name: str, cwd: str, root: str) -> bool:
