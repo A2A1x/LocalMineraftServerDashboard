@@ -56,6 +56,40 @@
   .pbtn.danger { background: #5a2a2a; } .pbtn.danger:hover { background: #7a3636; }
   .act:disabled, .pbtn:disabled { opacity: .4; cursor: not-allowed; }
   #alerts div { padding: 2px 0; } .a-warn { color: #ffd479; } .a-err { color: #ff8a8a; }
+  .pcard { cursor: pointer; } .pcard:hover { border-color: #3182ce; }
+  .vitals { margin: 6px 0 12px; }
+  .vrow { display: flex; align-items: center; gap: 10px; padding: 3px 0; }
+  .vlabel { color: #93a0b5; min-width: 96px; }
+  .pips { display: inline-flex; }
+  .pip { display: inline-block; width: 22px; height: 22px; image-rendering: pixelated;
+         background-repeat: no-repeat; background-position: center; background-size: contain; }
+  .he-inv { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; margin: 6px 0 14px; }
+  .he { flex: 0 0 auto; width: max-content; }
+  .xp-level { text-align: center; font-weight: 700; margin-bottom: 5px; }
+  .xp-track { height: 14px; background: #3a4150; border-radius: 6px; overflow: hidden; margin-bottom: 12px; }
+  .xp-prog { height: 100%; background: #5bd97e; }
+  .he-row { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; }
+  .he-icons { flex: 1; display: flex; justify-content: center; }
+  .he-btn { border: 0; border-radius: 6px; padding: 10px 16px; min-width: 132px; font: inherit; font-weight: 600; color: #fff; cursor: pointer; }
+  .he-btn.kill { background: #e07a5a; } .he-btn.kill:hover { background: #e88d70; }
+  .he-btn.heal { background: #2ec48f; } .he-btn.heal:hover { background: #42d29f; }
+  .he-btn:disabled { opacity: .4; cursor: not-allowed; }
+  .inv { display: flex; gap: 16px; align-items: stretch; }
+  .inv-col { display: flex; flex-direction: column; gap: 3px; }
+  .inv-off { justify-content: flex-end; }   /* offhand sits at the bottom, level with boots */
+  .inv-main { display: flex; flex-direction: column; gap: 3px; }
+  .inv-row { display: flex; gap: 3px; }
+  .inv-gap { height: 11px; }
+  .slot { position: relative; width: 42px; height: 42px; background: #0b0e14; border: 1px solid #2b3342; border-radius: 3px; display: flex; align-items: center; justify-content: center; }
+  .slot img { width: 36px; height: 36px; image-rendering: pixelated; }
+  .slot .cnt { position: absolute; right: 2px; bottom: 0; font: 11px/1 ui-monospace, monospace; color: #fff; text-shadow: 1px 1px #000; }
+  .slot .noimg { font-size: 7px; line-height: 1.1; color: #93a0b5; text-align: center; padding: 1px; word-break: break-word; }
+  .xp-bg { display: inline-block; width: 182px; height: 8px; background: url(/static/mc/xp_bg.png) left/100% 100% no-repeat; image-rendering: pixelated; }
+  .xp-fg { display: block; height: 100%; background: url(/static/mc/xp_fg.png) left/182px 100% no-repeat; image-rendering: pixelated; }
+  .xp-cssbar { display: inline-block; width: 182px; height: 8px; background: #1a3a24; border-radius: 3px; overflow: hidden; }
+  .xp-cssfill { display: block; height: 100%; background: #7ee2a0; }
+  .badge.tag { background: #2b3342; color: #cfd6e2; }
+  .pf.active-f { outline: 2px solid #3182ce; }
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
   .tile { background: #171b24; border: 1px solid #262c39; border-radius: 10px; padding: 14px 16px; }
   .tile-k { color: #93a0b5; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 6px; }
@@ -68,6 +102,7 @@
   <nav class="tabs">
     <button data-tab="overview" class="active">Overview</button>
     <button data-tab="server">MC Server</button>
+    <button data-tab="players">Players</button>
     <button data-tab="bot">Discord Bot</button>
     <button data-tab="playit">Playit</button>
     <button data-tab="config">Config</button>
@@ -122,6 +157,23 @@
         <button class="act" id="cmd-send" disabled>Send</button>
       </div>
     </div>
+  </section>
+
+  <section id="tab-players" class="tab" hidden>
+    <div class="card">
+      <h2>Players</h2>
+      <div class="row" id="player-filters" style="flex-wrap:wrap">
+        <button class="act pf active-f" data-f="all">All</button>
+        <button class="act pf" data-f="online">Online</button>
+        <button class="act pf" data-f="whitelisted">Whitelist</button>
+        <button class="act pf" data-f="opped">OPs</button>
+        <button class="act pf" data-f="banned">Banned</button>
+        <span id="players-note" class="muted"></span>
+      </div>
+      <div class="tiles" id="players-grid" style="margin-top:12px"></div>
+      <div id="banned-ips" class="muted" style="margin-top:8px"></div>
+    </div>
+    <div class="card" id="player-detail" style="margin-top:16px" hidden></div>
   </section>
 
   <section id="tab-bot" class="tab" hidden>
@@ -215,6 +267,7 @@ document.querySelectorAll('nav.tabs button[data-tab]').forEach(btn => {
   btn.onclick = () => {
     document.querySelectorAll('nav.tabs button[data-tab]').forEach(b => b.classList.toggle('active', b === btn));
     document.querySelectorAll('.tab').forEach(t => t.hidden = t.id !== 'tab-' + btn.dataset.tab);
+    if (btn.dataset.tab === 'players') refreshPlayers();
     if (btn.dataset.tab === 'config') { loadRoot(); loadConfigServers().then(loadConfig); }
   };
 });
@@ -580,6 +633,158 @@ async function refreshAlerts() {
     ? a.slice(-10).reverse().map(x => `<div><span class="${x.level === 'error' ? 'a-err' : 'a-warn'}">${new Date(x.at * 1000).toLocaleTimeString()}</span> ${esc(x.text)}</div>`).join('')
     : 'No alerts.';
 }
+
+// --- players tab ---
+let lastPlayers = null, playerFilter = 'all', currentPlayer = null;
+async function refreshPlayers() {
+  const d = await api('/api/players'); lastPlayers = d;
+  $('#players-note').textContent = d.server_running ? ''
+    : 'Server offline — lists are read-only; start it to manage players.';
+  $('#banned-ips').textContent = (d.banned_ips && d.banned_ips.length) ? 'Banned IPs: ' + d.banned_ips.join(', ') : '';
+  renderPlayersGrid();
+}
+function renderPlayersGrid() {
+  const d = lastPlayers; if (!d) return;
+  let list = d.players;
+  if (playerFilter === 'online') list = list.filter(p => p.online);
+  else if (playerFilter !== 'all') list = list.filter(p => p[playerFilter]);
+  const tag = (on, label, cls) => on ? `<span class="badge ${cls}">${label}</span>` : '';
+  $('#players-grid').innerHTML = list.length ? list.map(p =>
+    `<div class="tile pcard" data-name="${esc(p.name)}"><div class="big" style="font-size:15px">${esc(p.name)}</div>
+     <div class="muted" style="margin-top:4px">${[tag(p.online,'online','online'),tag(p.opped,'op','tag'),tag(p.whitelisted,'wl','tag'),tag(p.banned,'ban','offline')].join(' ') || '&nbsp;'}</div></div>`
+  ).join('') : '<span class="muted">No players.</span>';
+}
+document.querySelectorAll('#player-filters .pf').forEach(b => {
+  b.onclick = () => {
+    playerFilter = b.dataset.f;
+    document.querySelectorAll('#player-filters .pf').forEach(x => x.classList.toggle('active-f', x === b));
+    renderPlayersGrid();
+  };
+});
+$('#players-grid').addEventListener('click', e => {
+  const c = e.target.closest('.pcard'); if (c) openPlayer(c.dataset.name);
+});
+async function openPlayer(name) {
+  currentPlayer = name;
+  const d = await api('/api/server/player?name=' + encodeURIComponent(name));
+  if (d.error) { alert(d.error); return; }
+  const running = !!(lastPlayers && lastPlayers.server_running);
+  const el = $('#player-detail'); el.hidden = false;
+  el.innerHTML = playerDetailHtml(d, running);
+  el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  if (d.online) {
+    const inv = await api('/api/server/player/inventory?name=' + encodeURIComponent(name));
+    const box = $('#pd-inv');
+    if (box) {
+      if (inv && inv.items && inv.items.length) renderInventory(box, inv.items);
+      else { box.classList.add('muted'); box.textContent = (inv && inv.online) ? 'Empty inventory.' : 'Inventory unavailable.'; }
+    }
+  }
+}
+function slotHtml(item) {
+  if (!item) return '<div class="slot"></div>';
+  const short = esc(item.id.replace(/^minecraft:/, '').replace(/_/g, ' '));
+  const inner = item.texture ? `<img src="${item.texture}" alt="">` : `<span class="noimg">${short}</span>`;
+  const cnt = item.count > 1 ? `<span class="cnt">${item.count}</span>` : '';
+  return `<div class="slot" title="${esc(item.id)}${item.count > 1 ? ' ×' + item.count : ''}">${inner}${cnt}</div>`;
+}
+function renderInventory(box, items) {
+  const by = {}; items.forEach(it => { by[it.slot] = it; });
+  const cell = s => slotHtml(by[s]);
+  const row = arr => `<div class="inv-row">${arr.map(cell).join('')}</div>`;
+  box.classList.remove('muted');
+  box.innerHTML = `<div class="inv">
+    <div class="inv-col">${cell(103)}${cell(102)}${cell(101)}<div class="inv-gap"></div>${cell(100)}</div>
+    <div class="inv-col inv-off">${cell(-106)}</div>
+    <div class="inv-main">
+      ${row([9, 10, 11, 12, 13, 14, 15, 16, 17])}
+      ${row([18, 19, 20, 21, 22, 23, 24, 25, 26])}
+      ${row([27, 28, 29, 30, 31, 32, 33, 34, 35])}
+      <div class="inv-gap"></div>
+      ${row([0, 1, 2, 3, 4, 5, 6, 7, 8])}
+    </div>
+  </div>`;
+}
+function vitalPips(value, kind, icons) {
+  if (value == null) return '—';
+  const raw = (kind === 'heart') ? value.toFixed(1) : Math.round(value);
+  if (!icons) return `${raw} / 20`;
+  const v = Math.max(0, Math.min(20, Math.round(value)));
+  const full = Math.floor(v / 2), half = v % 2 === 1;
+  const empty = `url(/static/mc/${kind}_empty.png)`;
+  let pips = '';
+  for (let i = 0; i < 10; i++) {
+    const overlay = i < full ? `${kind}_full` : (i === full && half ? `${kind}_half` : null);
+    // empty container always drawn underneath; full/half layered on top
+    const bg = overlay ? `url(/static/mc/${overlay}.png), ${empty}` : empty;
+    pips += `<span class="pip" style="background-image:${bg}"></span>`;
+  }
+  return `<span class="pips" title="${raw} / 20">${pips}</span>`;
+}
+function xpBar(progress, icons) {
+  const pct = Math.max(0, Math.min(1, progress || 0)) * 100;
+  return icons
+    ? `<span class="xp-bg"><span class="xp-fg" style="width:${pct}%"></span></span>`
+    : `<span class="xp-cssbar"><span class="xp-cssfill" style="width:${pct}%"></span></span>`;
+}
+function playerDetailHtml(d, running) {
+  const dis = running ? '' : ' disabled';
+  const f = d.flags || {};
+  let vitals = '<div class="muted">Offline — live stats, kill/heal/feed, gamemode and teleport need the player online.</div>';
+  if (d.online) {
+    const p = d.pos, gms = ['survival', 'creative', 'adventure', 'spectator'];
+    const pct = Math.max(0, Math.min(1, d.xp_progress || 0)) * 100;
+    vitals = `<div class="he-inv">
+      <div class="he">
+        <div class="xp-level">Level ${d.level != null ? Math.round(d.level) : '?'}</div>
+        <div class="xp-track"><div class="xp-prog" style="width:${pct}%"></div></div>
+        <div class="he-row">
+          <button class="he-btn kill pa" data-a="kill"${dis}>💀 Kill</button>
+          <div class="he-icons">${vitalPips(d.health, 'heart', d.icons)}</div>
+          <button class="he-btn heal pa" data-a="heal"${dis}>❤ Heal</button>
+        </div>
+        <div class="he-row">
+          <button class="he-btn kill pa" data-a="starve"${dis}>💀 Starve</button>
+          <div class="he-icons">${vitalPips(d.food, 'food', d.icons)}</div>
+          <button class="he-btn heal pa" data-a="feed"${dis}>🍗 Feed</button>
+        </div>
+      </div>
+      <div class="pd-inv-col">
+        <div class="vlabel" style="margin-bottom:6px">Inventory</div>
+        <div id="pd-inv" class="muted">Loading inventory…</div>
+      </div>
+    </div>
+    <div class="vitals">
+      <div class="vrow"><span class="vlabel">Gamemode</span><select id="pd-gm"${dis}>${gms.map(m => `<option${m === d.gamemode ? ' selected' : ''}>${m}</option>`).join('')}</select></div>
+      <div class="vrow"><span class="vlabel">Position</span><span>${p ? `${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)} · ${(d.dimension || '').replace('minecraft:', '')}` : '—'}</span></div>
+      <div class="vrow"><span class="vlabel">Teleport</span><input id="pd-x" placeholder="X" style="width:74px"><input id="pd-y" placeholder="Y" style="width:74px"><input id="pd-z" placeholder="Z" style="width:74px"><button class="act" id="pd-tp"${dis}>Go</button></div>
+    </div>`;
+  }
+  return `<h2>${esc(d.name)} <span class="badge ${d.online ? 'online' : 'offline'}">${d.online ? 'online' : 'offline'}</span></h2>
+    ${vitals}
+    <div class="row" style="flex-wrap:wrap;margin-top:10px">
+      <button class="act pa" data-a="${f.opped ? 'deop' : 'op'}"${dis}>${f.opped ? 'De-op' : 'Op'}</button>
+      <button class="act pa" data-a="${f.whitelisted ? 'whitelist_remove' : 'whitelist_add'}"${dis}>${f.whitelisted ? 'Un-whitelist' : 'Whitelist'}</button>
+      <button class="act danger pa" data-a="${f.banned ? 'pardon' : 'ban'}"${dis}>${f.banned ? 'Unban' : 'Ban'}</button>
+      <button class="act danger pa" data-a="kick"${dis || (d.online ? '' : ' disabled')}>Kick</button>
+    </div>`;
+}
+async function _playerAction(body) {
+  const r = await api('/api/server/player', body);
+  if (r.error) alert(r.error);
+  if (currentPlayer) openPlayer(currentPlayer);
+  refreshPlayers();
+}
+$('#player-detail').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b || !currentPlayer) return;
+  if (b.id === 'pd-tp') { _playerAction({ name: currentPlayer, action: 'tp', x: $('#pd-x').value, y: $('#pd-y').value, z: $('#pd-z').value }); return; }
+  const a = b.dataset.a; if (!a) return;
+  if (['ban', 'kick', 'kill'].includes(a) && !confirm(`${a} ${currentPlayer}?`)) return;
+  _playerAction({ name: currentPlayer, action: a });
+});
+$('#player-detail').addEventListener('change', e => {
+  if (e.target.id === 'pd-gm') _playerAction({ name: currentPlayer, action: 'gamemode', mode: e.target.value });
+});
 
 // --- poll ---
 function tick() { refreshStatus(); refreshBot(); refreshPlayit(); refreshBackup(); refreshHistory(); refreshAlerts(); }

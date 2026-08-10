@@ -14,7 +14,7 @@ from collections import deque
 from pathlib import Path
 
 import psutil
-from flask import Flask, jsonify, render_template, request, send_file
+from flask import Flask, Response, jsonify, render_template, request, send_file
 from mcstatus import JavaServer
 
 HERE = Path(__file__).resolve().parent
@@ -71,6 +71,7 @@ DISK_ALERT_GB = float(CONFIG["disk_alert_gb"])
 DISCORD_ALERTS = bool(CONFIG["discord_alerts"])
 IDLE_SHUTDOWN_MIN = float(CONFIG["idle_shutdown_min"])
 IDLE_GRACE_MIN = float(CONFIG["idle_grace_min"])
+MC_ICONS = (HERE / "static" / "mc" / "heart_full.png").is_file()  # extracted MC heart/hunger sprites
 
 # Launch children without flashing a console window (matters under pythonw).
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
@@ -578,8 +579,301 @@ def api_server_command():
 
 
 _NAME_RE = re.compile(r"[A-Za-z0-9_]{1,16}")
-PLAYER_ACTIONS = {"kick": "kick", "ban": "ban", "op": "op",
-                  "deop": "deop", "whitelist": "whitelist add"}
+PLAYER_ACTIONS = {  # simple "<cmd> <name>" commands
+    "kick": "kick", "ban": "ban", "pardon": "pardon", "op": "op", "deop": "deop",
+    "whitelist": "whitelist add", "whitelist_add": "whitelist add",
+    "whitelist_remove": "whitelist remove", "kill": "kill",
+}
+PLAYER_EFFECTS = {  # need the player online
+    "heal": "effect give {n} minecraft:instant_health 1 100 true",
+    "feed": "effect give {n} minecraft:saturation 1 20 true",
+    "starve": "effect give {n} minecraft:hunger 30 100 true",
+}
+GAMEMODES = {"0": "survival", "1": "creative", "2": "adventure", "3": "spectator"}
+
+
+def _rcon_query(cmd: str):
+    """Run a read-only command over RCON and return the response (or None)."""
+    rc = _server_rcon()
+    if not rc:
+        return None
+    try:
+        return rcon_command(*rc, cmd)
+    except (OSError, RconError):
+        return None
+
+
+def _entity_scalar(out):
+    """Value from 'X has the following entity data: <val>', else None."""
+    if not out:
+        return None
+    m = re.search(r"entity data:\s*(.*)$", out, re.S)
+    return m.group(1).strip() if m else None
+
+
+def _current_server_folder():
+    """Folder of the running server, else the last-used one (for reading player files)."""
+    if SERVER_META.get("folder"):
+        return Path(SERVER_META["folder"])
+    m = _server_by_name(_load_state().get("last_server"))
+    return Path(m["path"]) if m else None
+
+
+def _json_names(folder: Path, filename: str) -> set:
+    try:
+        data = json.loads((folder / filename).read_text(encoding="utf-8") or "[]")
+        return {str(e.get("name", "")) for e in data if e.get("name")}
+    except (OSError, ValueError):
+        return set()
+
+
+def _online_names() -> set:
+    if not (SERVER and SERVER.alive()):
+        return set()
+    port = SERVER_META.get("port", 25565)
+    try:
+        if SERVER_META.get("query"):
+            q = JavaServer("127.0.0.1", SERVER_META.get("query_port", port), timeout=2).query()
+            return set(getattr(q.players, "list", None) or getattr(q.players, "names", []))
+        st = JavaServer("127.0.0.1", port, timeout=2).status()
+        return {p.name for p in (st.players.sample or [])}
+    except Exception:
+        return set()
+
+
+@app.get("/api/players")
+def api_players_list():
+    folder = _current_server_folder()
+    if not folder:
+        return jsonify({"players": [], "banned_ips": [], "server_running": False})
+    ops = {x.lower() for x in _json_names(folder, "ops.json")}
+    wl = {x.lower() for x in _json_names(folder, "whitelist.json")}
+    banned = {x.lower() for x in _json_names(folder, "banned-players.json")}
+    online = _online_names()
+    known = {}
+    try:
+        for e in json.loads((folder / "usercache.json").read_text(encoding="utf-8") or "[]"):
+            if e.get("name"):
+                known[e["name"]] = e.get("uuid")
+    except (OSError, ValueError):
+        pass
+    display = {}  # lower -> display name (union of every source)
+    for n in list(known) + list(online) + list(_json_names(folder, "ops.json")) \
+            + list(_json_names(folder, "whitelist.json")) + list(_json_names(folder, "banned-players.json")):
+        display.setdefault(n.lower(), n)
+    players = [{"name": disp, "uuid": known.get(disp), "online": disp in online,
+                "opped": low in ops, "banned": low in banned, "whitelisted": low in wl}
+               for low, disp in sorted(display.items())]
+    bips = []
+    try:
+        bips = [e.get("ip") for e in json.loads((folder / "banned-ips.json").read_text(encoding="utf-8") or "[]") if e.get("ip")]
+    except (OSError, ValueError):
+        pass
+    return jsonify({"players": players, "banned_ips": bips,
+                    "server_running": bool(SERVER and SERVER.alive())})
+
+
+@app.get("/api/server/player")
+def api_player_detail():
+    name = (request.args.get("name") or "").strip()
+    if not _NAME_RE.fullmatch(name):
+        return jsonify({"error": "Invalid player name."}), 400
+    folder = _current_server_folder()
+    low = name.lower()
+    flags = {"opped": low in {x.lower() for x in _json_names(folder, "ops.json")},
+             "banned": low in {x.lower() for x in _json_names(folder, "banned-players.json")},
+             "whitelisted": low in {x.lower() for x in _json_names(folder, "whitelist.json")}} if folder else {}
+    d = {"name": name, "flags": flags, "online": name in _online_names(), "icons": MC_ICONS}
+    if d["online"]:
+        def num(v):
+            try:
+                return float(re.sub(r"[^0-9.\-]", "", v))
+            except (TypeError, ValueError):
+                return None
+        d["health"] = num(_entity_scalar(_rcon_query(f"data get entity {name} Health")))
+        d["food"] = num(_entity_scalar(_rcon_query(f"data get entity {name} foodLevel")))
+        d["level"] = num(_entity_scalar(_rcon_query(f"data get entity {name} XpLevel")))
+        d["xp_progress"] = num(_entity_scalar(_rcon_query(f"data get entity {name} XpP")))
+        gm = _entity_scalar(_rcon_query(f"data get entity {name} playerGameType"))
+        d["gamemode"] = GAMEMODES.get(re.sub(r"\D", "", gm or ""))
+        dim = _entity_scalar(_rcon_query(f"data get entity {name} Dimension"))
+        d["dimension"] = dim.strip('"') if dim else None
+        pos = _entity_scalar(_rcon_query(f"data get entity {name} Pos"))
+        if pos:
+            nums = re.findall(r"-?\d+\.?\d*", pos)
+            if len(nums) >= 3:
+                d["pos"] = {"x": float(nums[0]), "y": float(nums[1]), "z": float(nums[2])}
+    return jsonify(d)
+
+
+def rcon_command_full(host, port, password, command, timeout=8.0):
+    """RCON exec that reassembles multi-packet responses (for large data like Inventory)."""
+    with socket.create_connection((host, port), timeout=timeout) as sock:
+        sock.settimeout(timeout)
+        _rcon_send(sock, 3, password)
+        while True:
+            rid, ptype, _ = _rcon_recv(sock)
+            if ptype == 2:
+                if rid == -1:
+                    raise RconError("authentication failed")
+                break
+        _rcon_send(sock, 2, command, req_id=1)
+        _rcon_send(sock, 2, "", req_id=2)  # sentinel; its reply marks the end of cmd output
+        body = ""
+        while True:
+            rid, _pt, chunk = _rcon_recv(sock)
+            if rid == 2:
+                break
+            body += chunk
+        return body
+
+
+def _snbt_top_elements(s):
+    """Split an SNBT list body (no outer brackets) into top-level {..} element strings."""
+    elems, depth, start, instr, esc = [], 0, None, False, False
+    for i, c in enumerate(s):
+        if instr:
+            if esc: esc = False
+            elif c == "\\": esc = True
+            elif c == '"': instr = False
+            continue
+        if c == '"':
+            instr = True
+        elif c in "{[":
+            if depth == 0 and c == "{":
+                start = i
+            depth += 1
+        elif c in "}]":
+            depth -= 1
+            if depth == 0 and start is not None and c == "}":
+                elems.append(s[start:i + 1])
+                start = None
+    return elems
+
+
+def _snbt_top_scalars(elem):
+    """Top-level scalar text of an SNBT compound (nested {}/[] removed) so we read
+    the item's own id/Slot/Count, not nested enchant/tag ids."""
+    out, depth, instr, esc = [], 0, False, False
+    for c in elem[1:-1]:
+        if instr:
+            out.append(c)
+            if esc: esc = False
+            elif c == "\\": esc = True
+            elif c == '"': instr = False
+            continue
+        if c == '"':
+            instr = True; out.append(c)
+        elif c in "{[":
+            depth += 1
+        elif c in "}]":
+            depth -= 1
+        elif depth == 0:
+            out.append(c)
+    return "".join(out)
+
+
+def _parse_inventory(snbt):
+    """Parse a player Inventory SNBT list into [{slot, id, count}]."""
+    if not snbt:
+        return []
+    s = snbt.strip()
+    if s.startswith("[") and s.endswith("]"):
+        s = s[1:-1]
+    items = []
+    for elem in _snbt_top_elements(s):
+        top = _snbt_top_scalars(elem)
+        mid = re.search(r'\bid:\s*"([^"]+)"', top)
+        if not mid:
+            continue
+        mslot = re.search(r"\bSlot:\s*(-?\d+)", top)
+        mcount = re.search(r"\b[Cc]ount:\s*(\d+)", top)
+        items.append({"slot": int(mslot.group(1)) if mslot else None,
+                      "id": mid.group(1),
+                      "count": int(mcount.group(1)) if mcount else 1})
+    return items
+
+
+_ICON_INDEX = {}  # folder -> {(ns, name): (jar, entry, kind)}
+_ICON_RX = re.compile(r"^assets/([^/]+)/textures/(item|block)/(.+)\.png$")
+
+
+def _icon_index(folder):
+    """Map (namespace, name) -> texture inside the selected server's mod jars.
+    Built once per server folder and cached (scans ~140 jars)."""
+    key = str(folder)
+    if key not in _ICON_INDEX:
+        idx = {}
+        mdir = folder / "mods"
+        for j in (sorted(mdir.glob("*.jar")) if mdir.is_dir() else []):
+            try:
+                with zipfile.ZipFile(j) as z:
+                    for n in z.namelist():
+                        m = _ICON_RX.match(n)
+                        if not m:
+                            continue
+                        ns, kind, sub = m.groups()
+                        k = (ns, sub.split("/")[-1])
+                        if k not in idx or (kind == "item" and idx[k][2] != "item"):
+                            idx[k] = (str(j), n, kind)  # item textures win over block
+            except Exception:
+                pass
+        _ICON_INDEX[key] = idx
+    return _ICON_INDEX[key]
+
+
+def _texture_for(item_id):
+    ns, _, name = item_id.partition(":")
+    if not name:
+        ns, name = "minecraft", ns
+    if ns == "minecraft" and (HERE / "static" / "items" / "render" / f"{name}.png").is_file():
+        return f"/static/items/render/{name}.png"  # pre-rendered 3D block icon
+    if (HERE / "static" / "items" / ns / f"{name}.png").is_file():
+        return f"/static/items/{ns}/{name}.png"  # shipped vanilla flat texture
+    folder = _current_server_folder()  # modded: pull from the selected server's mods
+    if folder and (ns, name) in _icon_index(folder):
+        return f"/api/item-icon?ns={ns}&name={name}"
+    return None
+
+
+@app.get("/api/item-icon")
+def api_item_icon():
+    ns, name = request.args.get("ns", ""), request.args.get("name", "")
+    if not re.fullmatch(r"[a-z0-9_.\-]+", ns) or not re.fullmatch(r"[a-z0-9_./\-]+", name):
+        return "bad request", 400
+    folder = _current_server_folder()
+    hit = _icon_index(folder).get((ns, name)) if folder else None
+    if not hit:
+        return "not found", 404
+    try:
+        with zipfile.ZipFile(hit[0]) as z:
+            data = z.read(hit[1])
+    except Exception:
+        return "not found", 404
+    return Response(data, mimetype="image/png", headers={"Cache-Control": "max-age=86400"})
+
+
+@app.get("/api/server/player/inventory")
+def api_player_inventory():
+    name = (request.args.get("name") or "").strip()
+    if not _NAME_RE.fullmatch(name):
+        return jsonify({"error": "Invalid player name."}), 400
+    if name not in _online_names():
+        return jsonify({"online": False, "items": []})
+    items = _parse_inventory(_entity_scalar(_rcon_query_full(f"data get entity {name} Inventory")))
+    for it in items:
+        it["texture"] = _texture_for(it["id"])
+    return jsonify({"online": True, "items": items})
+
+
+def _rcon_query_full(cmd):
+    rc = _server_rcon()
+    if not rc:
+        return None
+    try:
+        return rcon_command_full(*rc, cmd)
+    except (OSError, RconError):
+        return None
 
 
 @app.post("/api/server/player")
@@ -589,11 +883,25 @@ def api_server_player():
     data = request.get_json(force=True)
     name = (data.get("name") or "").strip()
     action = data.get("action")
-    if action not in PLAYER_ACTIONS:
-        return jsonify({"error": "Unknown action."}), 400
     if not _NAME_RE.fullmatch(name):  # guard against command injection
         return jsonify({"error": "Invalid player name."}), 400
-    ok, out = _send_command(f"{PLAYER_ACTIONS[action]} {name}")
+    if action in PLAYER_ACTIONS:
+        cmd = f"{PLAYER_ACTIONS[action]} {name}"
+    elif action in PLAYER_EFFECTS:
+        cmd = PLAYER_EFFECTS[action].format(n=name)
+    elif action == "gamemode":
+        if data.get("mode") not in ("survival", "creative", "adventure", "spectator"):
+            return jsonify({"error": "Bad gamemode."}), 400
+        cmd = f"gamemode {data['mode']} {name}"
+    elif action == "tp":
+        try:
+            x, y, z = float(data["x"]), float(data["y"]), float(data["z"])
+        except (KeyError, TypeError, ValueError):
+            return jsonify({"error": "Bad coordinates."}), 400
+        cmd = f"tp {name} {x:g} {y:g} {z:g}"
+    else:
+        return jsonify({"error": "Unknown action."}), 400
+    ok, out = _send_command(cmd)
     return (jsonify({"ok": True, "output": out}) if ok else (jsonify({"error": out}), 502))
 
 

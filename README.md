@@ -70,9 +70,10 @@ copy config.example.json config.json
 ## Tabs
 
 **Overview** (status tiles, history graphs, alerts, console) · **MC Server** (start/stop,
-console, commands, players, quick actions, backups) · **Discord Bot** (start/stop + `.env`
-settings) · **Playit** (tunnel control + log) · **Config** (pick the servers folder; per-server
-`server.properties`, memory, mods).
+console, commands, quick actions, backups) · **Players** (roster with online/op/ban/whitelist
+filters → per-player detail: vitals, kill/heal/feed/starve, gamemode, op/ban/whitelist/kick,
+teleport) · **Discord Bot** (start/stop + `.env` settings) · **Playit** (tunnel control + log) ·
+**Config** (pick the servers folder; per-server `server.properties`, memory, mods).
 
 ## Notes
 
@@ -82,6 +83,12 @@ settings) · **Playit** (tunnel control + log) · **Config** (pick the servers f
 - Bot settings are written to the bot's `.env`; your `DISCORD_TOKEN` is preserved and never shown.
 - Editing a **running** server's `server.properties` only takes effect on restart and may be
   overwritten when it stops — edit while stopped.
+- The player-panel heart / hunger icons in `static/mc/` and the item / block icons in
+  `static/items/` are Minecraft textures © Mojang / Microsoft, included for the player detail
+  view. The 3D block icons in `static/items/render/` are rendered from vanilla block models the
+  way the game does (isometric pose + face shading + tint); regenerate them for another version
+  with `py tools/render_icons.py <client.jar> static/items/render` (needs `Pillow` + `numpy`).
+  Modded item icons aren't shipped — they're pulled on demand from the selected server's mod jars.
 
 ## Test
 

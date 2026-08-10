@@ -164,6 +164,60 @@ def test_idle_action():
     assert _idle_action(0, 500.0, True, 500.0 + T, T)[0] == "shutdown"
 
 
+def test_entity_scalar():
+    from app import _entity_scalar
+    assert _entity_scalar("_A2A1 has the following entity data: 20.0f") == "20.0f"
+    assert _entity_scalar("P has the following entity data: [-261.45d, 65.0d, 227.36d]") == "[-261.45d, 65.0d, 227.36d]"
+    assert _entity_scalar("No entity was found") is None
+    assert _entity_scalar(None) is None
+
+
+def test_json_names():
+    from app import _json_names
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        (d / "ops.json").write_text('[{"name":"Notch","uuid":"x"},{"name":"Alex"}]')
+        assert _json_names(d, "ops.json") == {"Notch", "Alex"}
+        assert _json_names(d, "missing.json") == set()
+        (d / "bad.json").write_text("not json")
+        assert _json_names(d, "bad.json") == set()
+
+
+def test_parse_inventory():
+    from app import _parse_inventory
+    snbt = ('[{Slot: 0b, id: "minecraft:diamond_sword", Count: 1b, '
+            'tag: {Enchantments: [{id: "minecraft:sharpness", lvl: 5s}]}}, '
+            '{Slot: 9b, id: "minecraft:dirt", Count: 64b}, '
+            '{Slot: 103b, id: "minecraft:diamond_helmet", Count: 1b}]')
+    items = _parse_inventory(snbt)
+    got = {(it["slot"], it["id"], it["count"]) for it in items}
+    assert (0, "minecraft:diamond_sword", 1) in got
+    assert (9, "minecraft:dirt", 64) in got
+    assert (103, "minecraft:diamond_helmet", 1) in got
+    assert all("sharpness" not in it["id"] for it in items)  # nested id not captured
+    assert len(items) == 3, got
+    assert _parse_inventory("") == []
+
+
+def test_texture_for_vanilla():
+    from app import HERE, _texture_for
+    if (HERE / "static" / "items" / "minecraft" / "diamond_sword.png").is_file():
+        assert _texture_for("minecraft:diamond_sword") == "/static/items/minecraft/diamond_sword.png"
+
+
+def test_render_icons():
+    from app import HERE, _texture_for
+    render = HERE / "static" / "items" / "render"
+    if not (render / "stone.png").is_file():
+        return  # pre-rendered 3D icons not shipped in this checkout
+    # blocks prefer the 3D render over the flat face texture
+    assert _texture_for("minecraft:stone") == "/static/items/render/stone.png"
+    assert _texture_for("minecraft:spruce_slab") == "/static/items/render/spruce_slab.png"
+    # a plain item (no render) still resolves to its flat texture
+    if (HERE / "static" / "items" / "minecraft" / "apple.png").is_file():
+        assert _texture_for("minecraft:apple") == "/static/items/minecraft/apple.png"
+
+
 def test_jvm_memory():
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)
@@ -186,5 +240,10 @@ if __name__ == "__main__":
     test_valid_player_name()
     test_prune_backups()
     test_idle_action()
+    test_entity_scalar()
+    test_json_names()
+    test_parse_inventory()
+    test_texture_for_vanilla()
+    test_render_icons()
     test_jvm_memory()
     print("all tests passed")
