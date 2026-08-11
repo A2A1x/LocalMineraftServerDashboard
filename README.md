@@ -71,8 +71,11 @@ copy config.example.json config.json
 
 **Overview** (status tiles, history graphs, alerts, console) · **MC Server** (start/stop,
 console, commands, quick actions, backups) · **Players** (roster with online/op/ban/whitelist
-filters → per-player detail: vitals, kill/heal/feed/starve, gamemode, op/ban/whitelist/kick,
-teleport) · **Discord Bot** (start/stop + `.env` settings) · **Playit** (tunnel control + log) ·
+filters → per-player detail: vitals, inventory + ender chest with Minecraft-style hover tooltips
+(item name + enchantments), kill/heal/feed/starve, gamemode, op/ban/whitelist/kick, teleport —
+live over RCON for online players, or read from the saved `playerdata/*.dat` for offline ones,
+with the live-entity actions greyed out) ·
+**Discord Bot** (start/stop + `.env` settings) · **Playit** (tunnel control + log) ·
 **Config** (pick the servers folder; per-server `server.properties`, memory, mods).
 
 ## Notes

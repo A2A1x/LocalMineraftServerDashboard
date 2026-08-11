@@ -196,7 +196,22 @@ def test_parse_inventory():
     assert (103, "minecraft:diamond_helmet", 1) in got
     assert all("sharpness" not in it["id"] for it in items)  # nested id not captured
     assert len(items) == 3, got
+    sword = next(it for it in items if it["slot"] == 0)
+    assert sword["enchants"] == ["Sharpness V"]                # enchant read from nested tag
+    assert "enchants" not in next(it for it in items if it["slot"] == 9)
     assert _parse_inventory("") == []
+
+
+def test_enchants():
+    from app import _fmt_enchant, _nbt_enchants
+    assert _fmt_enchant("minecraft:sharpness", 5) == "Sharpness V"
+    assert _fmt_enchant("minecraft:mending", 1) == "Mending"   # level omitted at 1
+    assert _fmt_enchant("modid:soul_speed", 3) == "Soul Speed III"
+    assert _nbt_enchants({"tag": {"Enchantments": [{"id": "minecraft:protection", "lvl": 4},
+                                                    {"id": "minecraft:unbreaking", "lvl": 3}]}}) \
+        == ["Protection IV", "Unbreaking III"]
+    assert _nbt_enchants({"tag": {"StoredEnchantments": [{"id": "minecraft:mending", "lvl": 1}]}}) == ["Mending"]
+    assert _nbt_enchants({"id": "minecraft:stick"}) == []
 
 
 def test_texture_for_vanilla():
@@ -213,9 +228,62 @@ def test_render_icons():
     # blocks prefer the 3D render over the flat face texture
     assert _texture_for("minecraft:stone") == "/static/items/render/stone.png"
     assert _texture_for("minecraft:spruce_slab") == "/static/items/render/spruce_slab.png"
+    # special 3D renders (shield + mob heads) resolve to the render dir
+    if (HERE / "static" / "items" / "render" / "shield.png").is_file():
+        assert _texture_for("minecraft:shield") == "/static/items/render/shield.png"
+        assert _texture_for("minecraft:wither_skeleton_skull") == "/static/items/render/wither_skeleton_skull.png"
+    # a flat-filled item (crossbow uses the crossbow_standby texture) resolves to a flat icon
+    if (HERE / "static" / "items" / "minecraft" / "crossbow.png").is_file():
+        assert _texture_for("minecraft:crossbow") == "/static/items/minecraft/crossbow.png"
     # a plain item (no render) still resolves to its flat texture
     if (HERE / "static" / "items" / "minecraft" / "apple.png").is_file():
         assert _texture_for("minecraft:apple") == "/static/items/minecraft/apple.png"
+
+
+def test_nbt_playerdata():
+    """Round-trip a hand-built player.dat NBT through the reader + extractors."""
+    import gzip as _gz
+    from app import _NBT, _nbt_items, _nbt_vitals
+
+    def s(v):
+        e = v.encode(); return struct.pack(">H", len(e)) + e
+
+    def named(t, nm, payload):
+        return struct.pack(">b", t) + s(nm) + payload
+
+    def compound(*parts):
+        return b"".join(parts) + b"\x00"
+
+    def item(slot, iid, count):
+        return compound(named(1, "Slot", struct.pack(">b", slot)),
+                        named(8, "id", s(iid)),
+                        named(1, "Count", struct.pack(">b", count)))
+
+    inner = compound(
+        named(5, "Health", struct.pack(">f", 19.5)),
+        named(3, "foodLevel", struct.pack(">i", 17)),
+        named(3, "XpLevel", struct.pack(">i", 30)),
+        named(5, "XpP", struct.pack(">f", 0.5)),
+        named(3, "playerGameType", struct.pack(">i", 0)),
+        named(8, "Dimension", s("minecraft:the_nether")),
+        named(9, "Pos", struct.pack(">b", 6) + struct.pack(">i", 3)
+              + struct.pack(">ddd", 1.0, 64.0, -3.0)),
+        named(9, "Inventory", struct.pack(">b", 10) + struct.pack(">i", 1) + item(0, "minecraft:stone", 64)),
+        named(9, "EnderItems", struct.pack(">b", 10) + struct.pack(">i", 1) + item(3, "minecraft:diamond", 5)),
+    )
+    raw = struct.pack(">b", 10) + s("") + inner        # root compound, empty name
+
+    for data in (raw, _gz.compress(raw)):              # reader accepts raw and gzip'd
+        nbt = _NBT(data).parse()
+        assert abs(nbt["Health"] - 19.5) < 1e-4
+        v = _nbt_vitals(nbt)
+        assert v["food"] == 17 and v["level"] == 30
+        assert abs(v["xp_progress"] - 0.5) < 1e-4
+        assert v["gamemode"] == "survival"
+        assert v["dimension"] == "minecraft:the_nether"
+        assert v["pos"] == {"x": 1.0, "y": 64.0, "z": -3.0}
+        assert _nbt_items(nbt["Inventory"]) == [{"slot": 0, "id": "minecraft:stone", "count": 64}]
+        assert _nbt_items(nbt["EnderItems"]) == [{"slot": 3, "id": "minecraft:diamond", "count": 5}]
 
 
 def test_jvm_memory():
@@ -243,7 +311,9 @@ if __name__ == "__main__":
     test_entity_scalar()
     test_json_names()
     test_parse_inventory()
+    test_enchants()
     test_texture_for_vanilla()
     test_render_icons()
+    test_nbt_playerdata()
     test_jvm_memory()
     print("all tests passed")

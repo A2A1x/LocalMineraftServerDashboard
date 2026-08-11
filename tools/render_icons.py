@@ -63,7 +63,7 @@ def item_model(name):
 def resolve(model_path):
     """Merge the parent chain: textures (child wins), first elements, first
     gui display, and the root parent name (to tell blocks from flat items)."""
-    tx, elements, gui, cur, seen, root = {}, None, None, model_path, set(), model_path
+    tx, elements, gui, light, cur, seen, root = {}, None, None, None, model_path, set(), model_path
     while cur and cur not in seen:
         seen.add(cur)
         m = load_model(cur)
@@ -73,9 +73,11 @@ def resolve(model_path):
             elements = m["elements"]
         if gui is None:
             gui = ((m.get("display") or {}).get("gui"))
+        if light is None and "gui_light" in m:
+            light = m["gui_light"]
         root = cur.split("/")[-1]
         cur = m.get("parent")
-    return tx, elements, gui, root
+    return tx, elements, gui, root, light
 
 
 def tex_ref(tx, ref):
@@ -163,16 +165,10 @@ def affine_coeffs(dst, src_w, src_h):
     return np.linalg.solve(A, b)
 
 
-def render(name):
-    model = item_model(name)
-    if not model or not model.startswith("block/"):
-        return None
-    tx, elements, gui, root = resolve(model)
-    if not elements:
-        return None
-    rx, ry, rz = (gui or {}).get("rotation", [30, 225, 0])
+def rasterize(elements, tx, rot, scale, flat_light=False):
+    """Core: draw a model's boxes in the [rx,ry,rz] gui pose and return an RGBA icon."""
+    rx, ry, rz = rot
     R = rot_matrix(rx * DEG, (ry + YAW) * DEG, rz * DEG)  # our yaw is offset from MC's camera
-    scale = (gui or {}).get("scale", [0.625, 0.625, 0.625])[0]
 
     def project(p):
         v = R @ (np.array(p, float) - 8.0)      # center then rotate
@@ -190,7 +186,6 @@ def render(name):
             im = load_texture(f"block/{texname}") if texname and "/" not in texname else load_texture(texname)
             if im is None:
                 continue
-            # spatial corners
             pts3 = []
             for (ux, uy, uz) in FACES[fd]:
                 p = np.array([f[0] if ux == 0 else t[0],
@@ -198,12 +193,10 @@ def render(name):
                               f[2] if uz == 0 else t[2]], float)
                 pts3.append(erot(p))
             proj = [project(p) for p in pts3]
-            # backface cull by 2D winding (screen y is down)
             (ax, ay, _), (bx, by, _), (cx, cy, _), _ = proj
             area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
             if area <= 0:
                 continue                          # cull faces pointing away from camera
-            # uv rect (0..16); default from box extent
             uv = faced.get("uv")
             if uv is None:
                 ua, va = UV_AXIS[fd]
@@ -215,48 +208,146 @@ def render(name):
                             round(max(u0, u1) / 16 * W), round(max(v0, v1) / 16 * H)))
             if crop.width < 1 or crop.height < 1:
                 continue
-            rot = faced.get("rotation", 0)
-            if rot:
-                crop = crop.rotate(-rot, expand=True)
-            # shade + tint on the source
+            rot_uv = faced.get("rotation", 0)
+            if rot_uv:
+                crop = crop.rotate(-rot_uv, expand=True)
             arr = np.asarray(crop, float)
-            sh = SHADE.get(fd, 1.0)
-            arr[..., :3] *= sh
+            arr[..., :3] *= 1.0 if flat_light else SHADE.get(fd, 1.0)
             if "tintindex" in faced:
                 cm = "colormap/foliage" if (texname and "leaves" in texname) else "colormap/grass"
-                tint = colormap_default(cm)
-                arr[..., :3] *= np.array(tint) / 255.0
+                arr[..., :3] *= np.array(colormap_default(cm)) / 255.0
             crop = Image.fromarray(np.clip(arr, 0, 255).astype("uint8"), "RGBA")
-            # map crop (TL,TR,BL) -> screen quad corners
             dst = [(proj[0][0], proj[0][1]), (proj[1][0], proj[1][1]), (proj[3][0], proj[3][1])]
-            coeffs = affine_coeffs(dst, crop.width, crop.height)
-            layer = crop.transform((SIZE, SIZE), Image.AFFINE, data=coeffs,
+            layer = crop.transform((SIZE, SIZE), Image.AFFINE,
+                                   data=affine_coeffs(dst, crop.width, crop.height),
                                    resample=Image.NEAREST, fillcolor=(0, 0, 0, 0))
-            depth = sum(p[2] for p in proj) / 4.0
-            quads.append((depth, layer))
+            quads.append((sum(p[2] for p in proj) / 4.0, layer))
     for _, layer in sorted(quads, key=lambda q: q[0]):   # painter's: far -> near
         canvas.alpha_composite(layer)
     return canvas
 
 
+def render(name):
+    model = item_model(name)
+    if not model or not model.startswith("block/"):
+        return None
+    tx, elements, gui, root, light = resolve(model)
+    if not elements:
+        return None
+    return rasterize(elements, tx, (gui or {}).get("rotation", [30, 225, 0]),
+                     (gui or {}).get("scale", [0.625] * 3)[0], flat_light=(light == "front"))
+
+
+# ---- special item renderers (heads + shield use hand-built models) ---------
+HEAD_TEX = {  # mob head item id -> its entity texture (head region is the standard skin layout)
+    "skeleton_skull": "entity/skeleton/skeleton",
+    "wither_skeleton_skull": "entity/skeleton/wither_skeleton",
+    "zombie_head": "entity/zombie/zombie",
+    "creeper_head": "entity/creeper/creeper",
+    "piglin_head": "entity/piglin/piglin",
+    "player_head": "entity/player/wide/steve",
+}
+
+
+def _skin_faces(x, y, w, d, h, tw, th, front="south"):
+    """UV rect (0..16) per cube face from a skin's box net at texel (x,y). `front`
+    is the model face the texture's front region maps to (the one the gui pose aims
+    at the camera): 'south' for heads, 'north' for the shield (handle behind)."""
+    def uv(a, b, c, e):
+        return [a / tw * 16, b / th * 16, c / tw * 16, e / th * 16]
+    up = uv(x + d, y, x + d + w, y + d)
+    down = uv(x + d + w, y + d, x + d + 2 * w, y)
+    fr = uv(x + d, y + d, x + d + w, y + d + h)                    # front
+    bk = uv(x + 2 * d + w, y + d, x + 2 * d + 2 * w, y + d + h)    # back
+    ri = uv(x, y + d, x + d, y + d + h)                            # character's right
+    le = uv(x + d + w, y + d, x + 2 * d + w, y + d + h)            # character's left
+    if front == "north":
+        faces = {"north": fr, "south": bk, "east": ri, "west": le}
+    else:
+        faces = {"south": fr, "north": bk, "west": ri, "east": le}
+    faces["up"], faces["down"] = up, down
+    return {k: {"texture": "#t", "uv": v} for k, v in faces.items()}
+
+
+def render_head(tex):
+    im = load_texture(tex)
+    if im is None:
+        return None
+    tw, th = im.size
+    els = [{"from": [4, 4, 4], "to": [12, 12, 12], "faces": _skin_faces(0, 0, 8, 8, 8, tw, th)}]
+    if th >= 64 or tw >= 64:  # second (hat) layer, drawn slightly larger
+        els.append({"from": [3.6, 3.6, 3.6], "to": [12.4, 12.4, 12.4],
+                    "faces": _skin_faces(32, 0, 8, 8, 8, tw, th)})
+    return rasterize(els, {"t": tex}, [30, 45, 0], 1.0)
+
+
+def render_shield():
+    tex = "entity/shield_base_nopattern"
+    if load_texture(tex) is None:
+        return None
+
+    def box(x0, y0, z0, dx, dy, dz, u, v):
+        return {"from": [x0 + 8, y0 + 8, z0 + 8], "to": [x0 + dx + 8, y0 + dy + 8, z0 + dz + 8],
+                "faces": _skin_faces(u, v, dx, dz, dy, 64, 64, front="north")}
+    els = [box(-6, -11, -2, 12, 22, 1, 0, 0),      # plate (decorated front faces -Z)
+           box(-1, -3, -1, 2, 6, 6, 26, 0)]        # handle (behind, +Z)
+    return rasterize(els, {"t": tex}, [15, 155, -5], 0.65, flat_light=True)  # yaw faces the front at us
+
+
+def render_flat(name):
+    """Composite a generated item's layer textures (fixes e.g. crossbow, enchanted apples)."""
+    model = item_model(name)
+    if not model or not model.startswith("item/"):
+        return None
+    tx = resolve(model)[0]
+    base = None
+    i = 0
+    while f"layer{i}" in tx:
+        im = load_texture(tx[f"layer{i}"].split(":")[-1])
+        i += 1
+        if im is None:
+            continue
+        base = im.copy() if base is None else Image.alpha_composite(base, im)
+    return base
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
+    flat_dir = OUT.parent / "minecraft"
     items = ONLY or sorted(n.split("/")[-1][:-5] for n in NAMES
                            if n.startswith("assets/minecraft/items/") and n.endswith(".json"))
-    made = 0
+    blocks = heads = shields = flats = 0
     for name in items:
         try:
             im = render(name)
         except Exception as e:
-            if ONLY:
-                print("ERR", name, e)
+            if ONLY: print("ERR", name, e)
             continue
         if im and im.getbbox():
-            im.save(OUT / f"{name}.png")
-            made += 1
-            if ONLY:
-                print("rendered", name, im.getbbox())
-    print(f"rendered {made} icons -> {OUT}")
+            im.save(OUT / f"{name}.png"); blocks += 1
+            if ONLY: print("block", name, im.getbbox())
+    for name, tex in HEAD_TEX.items():          # mob heads
+        if ONLY and name not in items:
+            continue
+        im = render_head(tex)
+        if im and im.getbbox():
+            im.save(OUT / f"{name}.png"); heads += 1
+    if not ONLY or "shield" in items:           # shield
+        im = render_shield()
+        if im and im.getbbox():
+            im.save(OUT / "shield.png"); shields += 1
+    for name in items:                          # flat items missing an icon (layer mismatch, etc.)
+        if (OUT / f"{name}.png").is_file() or (flat_dir / f"{name}.png").is_file():
+            continue
+        try:
+            im = render_flat(name)
+        except Exception:
+            im = None
+        if im and im.getbbox():
+            flat_dir.mkdir(parents=True, exist_ok=True)
+            im.save(flat_dir / f"{name}.png"); flats += 1
+            if ONLY: print("flat", name)
+    print(f"blocks={blocks} heads={heads} shields={shields} flat_fills={flats} -> {OUT}")
 
 
 main()

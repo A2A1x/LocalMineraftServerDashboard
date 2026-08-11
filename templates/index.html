@@ -82,8 +82,24 @@
   .inv-gap { height: 11px; }
   .slot { position: relative; width: 42px; height: 42px; background: #0b0e14; border: 1px solid #2b3342; border-radius: 3px; display: flex; align-items: center; justify-content: center; }
   .slot img { width: 36px; height: 36px; image-rendering: pixelated; }
-  .slot .cnt { position: absolute; right: 2px; bottom: 0; font: 11px/1 ui-monospace, monospace; color: #fff; text-shadow: 1px 1px #000; }
+  .slot .cnt { position: absolute; right: 2px; bottom: 0; font: 11px/1 ui-monospace, monospace; color: #fff; text-shadow: 1px 1px #000; z-index: 2; }
   .slot .noimg { font-size: 7px; line-height: 1.1; color: #93a0b5; text-align: center; padding: 1px; word-break: break-word; }
+  .slot .glint { position: absolute; width: 36px; height: 36px; pointer-events: none; mix-blend-mode: screen;
+                 -webkit-mask-size: contain; mask-size: contain; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+                 -webkit-mask-position: center; mask-position: center;
+                 background: linear-gradient(115deg, transparent 38%, rgba(170,90,255,.55) 47%, rgba(225,170,255,.85) 50%,
+                             rgba(170,90,255,.55) 53%, transparent 62%);
+                 background-size: 300% 300%; animation: glint 2.8s linear infinite; }
+  @keyframes glint { 0% { background-position: 100% 0; } 100% { background-position: 0 100%; } }
+  @media (prefers-reduced-motion: reduce) { .slot .glint { animation: none; background-position: 50% 50%; } }
+  #mctip { position: fixed; z-index: 2000; pointer-events: none; display: none; max-width: 340px;
+           background: rgba(16, 0, 16, .95); border: 2px solid #2b0a52;
+           box-shadow: inset 0 0 0 1px #52259a, 0 3px 10px #000a; border-radius: 2px;
+           padding: 5px 8px; font-size: 13px; line-height: 1.42; }
+  #mctip .mctt-name { color: #fff; font-weight: 600; }
+  #mctip .mctt-name .mctt-x { color: #8a93a3; font-weight: 400; }
+  #mctip .mctt-ench { color: #adadad; }
+  #mctip .mctt-id { color: #5a6270; font-size: 11px; margin-top: 3px; }
   .xp-bg { display: inline-block; width: 182px; height: 8px; background: url(/static/mc/xp_bg.png) left/100% 100% no-repeat; image-rendering: pixelated; }
   .xp-fg { display: block; height: 100%; background: url(/static/mc/xp_fg.png) left/182px 100% no-repeat; image-rendering: pixelated; }
   .xp-cssbar { display: inline-block; width: 182px; height: 8px; background: #1a3a24; border-radius: 3px; overflow: hidden; }
@@ -672,22 +688,64 @@ async function openPlayer(name) {
   const el = $('#player-detail'); el.hidden = false;
   el.innerHTML = playerDetailHtml(d, running);
   el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  if (d.online) {
+  if (d.online || d.has_data) {
     const inv = await api('/api/server/player/inventory?name=' + encodeURIComponent(name));
     const box = $('#pd-inv');
     if (box) {
       if (inv && inv.items && inv.items.length) renderInventory(box, inv.items);
       else { box.classList.add('muted'); box.textContent = (inv && inv.online) ? 'Empty inventory.' : 'Inventory unavailable.'; }
     }
+    const ebox = $('#pd-ender');
+    if (ebox && inv && inv.ender && inv.ender.length) {
+      renderEnder(ebox, inv.ender);
+      const lbl = $('#pd-ender-label'); if (lbl) lbl.style.display = '';
+    }
   }
+}
+function itemName(id) {
+  return id.replace(/^[a-z0-9_.\-]+:/, '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 function slotHtml(item) {
   if (!item) return '<div class="slot"></div>';
   const short = esc(item.id.replace(/^minecraft:/, '').replace(/_/g, ' '));
   const inner = item.texture ? `<img src="${item.texture}" alt="">` : `<span class="noimg">${short}</span>`;
   const cnt = item.count > 1 ? `<span class="cnt">${item.count}</span>` : '';
-  return `<div class="slot" title="${esc(item.id)}${item.count > 1 ? ' ×' + item.count : ''}">${inner}${cnt}</div>`;
+  const enchants = item.enchants || [];
+  const ench = enchants.map(esc).join('|');
+  const glint = (enchants.length && item.texture)   // enchant shimmer, masked to the item shape
+    ? `<span class="glint" style="-webkit-mask-image:url('${item.texture}');mask-image:url('${item.texture}')"></span>` : '';
+  return `<div class="slot" data-name="${esc(itemName(item.id))}" data-id="${esc(item.id)}"` +
+         ` data-count="${item.count}" data-ench="${ench}">${inner}${glint}${cnt}</div>`;
 }
+// Minecraft-style hover tooltip: item name + enchantment lines.
+(function () {
+  let tip;
+  const show = s => {
+    if (!tip) { tip = document.createElement('div'); tip.id = 'mctip'; document.body.appendChild(tip); }
+    const ench = (s.dataset.ench || '').split('|').filter(Boolean);
+    const n = s.dataset.count > 1 ? `${s.dataset.name} <span class="mctt-x">×${s.dataset.count}</span>` : s.dataset.name;
+    tip.innerHTML = `<div class="mctt-name">${n}</div>` +
+      ench.map(x => `<div class="mctt-ench">${x}</div>`).join('') +
+      `<div class="mctt-id">${s.dataset.id}</div>`;
+    tip.style.display = 'block';
+  };
+  document.addEventListener('mouseover', e => {
+    const s = e.target.closest && e.target.closest('.slot[data-name]');
+    if (s) show(s);
+  });
+  document.addEventListener('mousemove', e => {
+    if (!tip || tip.style.display === 'none') return;
+    if (!(e.target.closest && e.target.closest('.slot[data-name]'))) { tip.style.display = 'none'; return; }
+    const r = tip.getBoundingClientRect();
+    let x = e.clientX + 14, y = e.clientY + 16;
+    if (x + r.width > innerWidth) x = e.clientX - r.width - 8;
+    if (y + r.height > innerHeight) y = Math.max(4, innerHeight - r.height - 4);
+    tip.style.left = x + 'px'; tip.style.top = y + 'px';
+  });
+  document.addEventListener('mouseout', e => {
+    if (tip && e.target.closest && e.target.closest('.slot[data-name]')) tip.style.display = 'none';
+  });
+})();
 function renderInventory(box, items) {
   const by = {}; items.forEach(it => { by[it.slot] = it; });
   const cell = s => slotHtml(by[s]);
@@ -703,6 +761,15 @@ function renderInventory(box, items) {
       <div class="inv-gap"></div>
       ${row([0, 1, 2, 3, 4, 5, 6, 7, 8])}
     </div>
+  </div>`;
+}
+function renderEnder(box, items) {
+  const by = {}; items.forEach(it => { by[it.slot] = it; });
+  const row = arr => `<div class="inv-row">${arr.map(s => slotHtml(by[s])).join('')}</div>`;
+  box.innerHTML = `<div class="inv-main">
+    ${row([0, 1, 2, 3, 4, 5, 6, 7, 8])}
+    ${row([9, 10, 11, 12, 13, 14, 15, 16, 17])}
+    ${row([18, 19, 20, 21, 22, 23, 24, 25, 26])}
   </div>`;
 }
 function vitalPips(value, kind, icons) {
@@ -728,36 +795,41 @@ function xpBar(progress, icons) {
     : `<span class="xp-cssbar"><span class="xp-cssfill" style="width:${pct}%"></span></span>`;
 }
 function playerDetailHtml(d, running) {
-  const dis = running ? '' : ' disabled';
+  const dis = running ? '' : ' disabled';                 // op/whitelist/ban act on the name, work offline
+  const edis = (running && d.online) ? '' : ' disabled';  // live-entity actions need the player loaded
   const f = d.flags || {};
-  let vitals = '<div class="muted">Offline — live stats, kill/heal/feed, gamemode and teleport need the player online.</div>';
-  if (d.online) {
+  let vitals = '<div class="muted">No saved data for this player yet — stats and inventory appear once they have joined the server.</div>';
+  if (d.online || d.has_data) {
     const p = d.pos, gms = ['survival', 'creative', 'adventure', 'spectator'];
     const pct = Math.max(0, Math.min(1, d.xp_progress || 0)) * 100;
-    vitals = `<div class="he-inv">
+    const offNote = d.online ? '' :
+      '<div class="muted" style="margin-bottom:8px">Offline — showing last-saved data; kill/heal/feed, gamemode and teleport need the player online.</div>';
+    vitals = `${offNote}<div class="he-inv">
       <div class="he">
         <div class="xp-level">Level ${d.level != null ? Math.round(d.level) : '?'}</div>
         <div class="xp-track"><div class="xp-prog" style="width:${pct}%"></div></div>
         <div class="he-row">
-          <button class="he-btn kill pa" data-a="kill"${dis}>💀 Kill</button>
+          <button class="he-btn kill pa" data-a="kill"${edis}>💀 Kill</button>
           <div class="he-icons">${vitalPips(d.health, 'heart', d.icons)}</div>
-          <button class="he-btn heal pa" data-a="heal"${dis}>❤ Heal</button>
+          <button class="he-btn heal pa" data-a="heal"${edis}>❤ Heal</button>
         </div>
         <div class="he-row">
-          <button class="he-btn kill pa" data-a="starve"${dis}>💀 Starve</button>
+          <button class="he-btn kill pa" data-a="starve"${edis}>💀 Starve</button>
           <div class="he-icons">${vitalPips(d.food, 'food', d.icons)}</div>
-          <button class="he-btn heal pa" data-a="feed"${dis}>🍗 Feed</button>
+          <button class="he-btn heal pa" data-a="feed"${edis}>🍗 Feed</button>
         </div>
       </div>
       <div class="pd-inv-col">
         <div class="vlabel" style="margin-bottom:6px">Inventory</div>
         <div id="pd-inv" class="muted">Loading inventory…</div>
+        <div class="vlabel" id="pd-ender-label" style="margin:12px 0 6px;display:none">Ender Chest</div>
+        <div id="pd-ender"></div>
       </div>
     </div>
     <div class="vitals">
-      <div class="vrow"><span class="vlabel">Gamemode</span><select id="pd-gm"${dis}>${gms.map(m => `<option${m === d.gamemode ? ' selected' : ''}>${m}</option>`).join('')}</select></div>
+      <div class="vrow"><span class="vlabel">Gamemode</span><select id="pd-gm"${edis}>${gms.map(m => `<option${m === d.gamemode ? ' selected' : ''}>${m}</option>`).join('')}</select></div>
       <div class="vrow"><span class="vlabel">Position</span><span>${p ? `${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)} · ${(d.dimension || '').replace('minecraft:', '')}` : '—'}</span></div>
-      <div class="vrow"><span class="vlabel">Teleport</span><input id="pd-x" placeholder="X" style="width:74px"><input id="pd-y" placeholder="Y" style="width:74px"><input id="pd-z" placeholder="Z" style="width:74px"><button class="act" id="pd-tp"${dis}>Go</button></div>
+      <div class="vrow"><span class="vlabel">Teleport</span><input id="pd-x" placeholder="X" style="width:74px"><input id="pd-y" placeholder="Y" style="width:74px"><input id="pd-z" placeholder="Z" style="width:74px"><button class="act" id="pd-tp"${edis}>Go</button></div>
     </div>`;
   }
   return `<h2>${esc(d.name)} <span class="badge ${d.online ? 'online' : 'offline'}">${d.online ? 'online' : 'offline'}</span></h2>
@@ -766,7 +838,7 @@ function playerDetailHtml(d, running) {
       <button class="act pa" data-a="${f.opped ? 'deop' : 'op'}"${dis}>${f.opped ? 'De-op' : 'Op'}</button>
       <button class="act pa" data-a="${f.whitelisted ? 'whitelist_remove' : 'whitelist_add'}"${dis}>${f.whitelisted ? 'Un-whitelist' : 'Whitelist'}</button>
       <button class="act danger pa" data-a="${f.banned ? 'pardon' : 'ban'}"${dis}>${f.banned ? 'Unban' : 'Ban'}</button>
-      <button class="act danger pa" data-a="kick"${dis || (d.online ? '' : ' disabled')}>Kick</button>
+      <button class="act danger pa" data-a="kick"${edis}>Kick</button>
     </div>`;
 }
 async function _playerAction(body) {

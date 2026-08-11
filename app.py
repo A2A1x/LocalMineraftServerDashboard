@@ -1,3 +1,4 @@
+import gzip
 import json
 import os
 import re
@@ -627,6 +628,120 @@ def _json_names(folder: Path, filename: str) -> set:
         return set()
 
 
+class _NBT:
+    """Minimal reader for the (gzip'd) named binary tag format Minecraft uses for
+    world/playerdata/<uuid>.dat. Returns the root compound as a plain dict."""
+
+    def __init__(self, data: bytes):
+        self.b = gzip.decompress(data) if data[:2] == b"\x1f\x8b" else data
+        self.i = 0
+
+    def _u(self, fmt):
+        v = struct.unpack_from(fmt, self.b, self.i)
+        self.i += struct.calcsize(fmt)
+        return v[0]
+
+    def _name(self):
+        n = self._u(">H")
+        s = self.b[self.i:self.i + n].decode("utf-8", "replace")
+        self.i += n
+        return s
+
+    def _payload(self, t):
+        if t == 1: return self._u(">b")
+        if t == 2: return self._u(">h")
+        if t == 3: return self._u(">i")
+        if t == 4: return self._u(">q")
+        if t == 5: return self._u(">f")
+        if t == 6: return self._u(">d")
+        if t == 7:                                    # byte array
+            n = self._u(">i"); v = self.b[self.i:self.i + n]; self.i += n; return bytes(v)
+        if t == 8: return self._name()
+        if t == 9:                                    # list
+            et = self._u(">b"); n = self._u(">i")
+            return [self._payload(et) for _ in range(n)]
+        if t == 10:                                   # compound
+            d = {}
+            while (tt := self._u(">b")) != 0:
+                nm = self._name()                     # name before payload (evaluation order)
+                d[nm] = self._payload(tt)
+            return d
+        if t == 11: n = self._u(">i"); return [self._u(">i") for _ in range(n)]
+        if t == 12: n = self._u(">i"); return [self._u(">q") for _ in range(n)]
+        raise ValueError(f"bad NBT tag {t}")
+
+    def parse(self):
+        t = self._u(">b")
+        if t == 0:
+            return {}
+        self._name()                                  # root name (usually "")
+        return self._payload(t)
+
+
+def _level_name(folder: Path) -> str:
+    try:
+        for line in (folder / "server.properties").read_text(encoding="utf-8").splitlines():
+            if line.startswith("level-name="):
+                return line.split("=", 1)[1].strip() or "world"
+    except OSError:
+        pass
+    return "world"
+
+
+def _player_uuid(folder: Path, name: str):
+    try:
+        for e in json.loads((folder / "usercache.json").read_text(encoding="utf-8") or "[]"):
+            if str(e.get("name", "")).lower() == name.lower():
+                return e.get("uuid")
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _offline_playerdata(folder: Path, name: str):
+    """Parse the last-saved NBT for an offline player, or None if unavailable."""
+    uuid = _player_uuid(folder, name)
+    if not folder or not uuid:
+        return None
+    dat = folder / _level_name(folder) / "playerdata" / f"{uuid}.dat"
+    try:
+        return _NBT(dat.read_bytes()).parse()
+    except (OSError, ValueError, EOFError, struct.error, gzip.BadGzipFile):
+        return None  # missing, locked, or mid-write
+
+
+def _nbt_vitals(nbt: dict) -> dict:
+    """Pull the same fields the online RCON path exposes out of player NBT."""
+    d = {}
+    for key, tag in (("health", "Health"), ("food", "foodLevel"),
+                     ("level", "XpLevel"), ("xp_progress", "XpP")):
+        v = nbt.get(tag)
+        if isinstance(v, (int, float)):
+            d[key] = v
+    d["gamemode"] = GAMEMODES.get(str(nbt.get("playerGameType")))
+    dim = nbt.get("Dimension")
+    if isinstance(dim, str):
+        d["dimension"] = dim
+    pos = nbt.get("Pos")
+    if isinstance(pos, list) and len(pos) >= 3:
+        d["pos"] = {"x": pos[0], "y": pos[1], "z": pos[2]}
+    return {k: v for k, v in d.items() if v is not None}
+
+
+def _nbt_items(lst) -> list:
+    """A player Inventory / EnderItems NBT list -> [{slot, id, count}]."""
+    out = []
+    for it in (lst or []):
+        iid = it.get("id") if isinstance(it, dict) else None
+        if isinstance(iid, str):
+            entry = {"slot": it.get("Slot"), "id": iid, "count": it.get("Count", it.get("count", 1))}
+            ench = _nbt_enchants(it)
+            if ench:
+                entry["enchants"] = ench
+            out.append(entry)
+    return out
+
+
 def _online_names() -> set:
     if not (SERVER and SERVER.alive()):
         return set()
@@ -703,6 +818,12 @@ def api_player_detail():
             nums = re.findall(r"-?\d+\.?\d*", pos)
             if len(nums) >= 3:
                 d["pos"] = {"x": float(nums[0]), "y": float(nums[1]), "z": float(nums[2])}
+        d["has_data"] = True
+    elif folder:  # offline: read the last-saved player.dat
+        nbt = _offline_playerdata(folder, name)
+        if nbt:
+            d.update(_nbt_vitals(nbt))
+            d["has_data"] = True
     return jsonify(d)
 
 
@@ -773,8 +894,44 @@ def _snbt_top_scalars(elem):
     return "".join(out)
 
 
+_ROMAN = ["", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"]
+
+
+def _fmt_enchant(eid, lvl):
+    """'minecraft:sharpness', 5 -> 'Sharpness V' (level omitted at 1, like MC's max-1 enchants)."""
+    name = eid.split(":")[-1].replace("_", " ").title()
+    if lvl and lvl > 1:
+        return f"{name} {_ROMAN[lvl] if lvl < len(_ROMAN) else lvl}"
+    return name
+
+
+def _snbt_enchants(elem):
+    """Formatted enchant lines from an item's SNBT compound (Enchantments / StoredEnchantments)."""
+    m = re.search(r'(?:Stored)?Enchantments:\s*\[(.*?)\]', elem, re.S)
+    if not m:
+        return []
+    return [_fmt_enchant(mm.group(1), int(mm.group(2)))
+            for mm in re.finditer(r'id:\s*"([^"]+)"[^}]*?lvl:\s*(\d+)', m.group(1))]
+
+
+def _nbt_enchants(it):
+    """Formatted enchant lines from an item's parsed NBT (1.20.x tag, or 1.20.5+ components)."""
+    tag = it.get("tag") if isinstance(it.get("tag"), dict) else {}
+    lst = tag.get("Enchantments") or tag.get("StoredEnchantments")
+    if not lst:
+        comp = it.get("components") if isinstance(it.get("components"), dict) else {}
+        e = comp.get("minecraft:enchantments") or comp.get("minecraft:stored_enchantments") or {}
+        levels = e.get("levels", e) if isinstance(e, dict) else {}
+        lst = [{"id": k, "lvl": v} for k, v in levels.items()] if isinstance(levels, dict) else []
+    out = []
+    for e in (lst or []):
+        if isinstance(e, dict) and e.get("id"):
+            out.append(_fmt_enchant(e["id"], int(e.get("lvl") or 1)))
+    return out
+
+
 def _parse_inventory(snbt):
-    """Parse a player Inventory SNBT list into [{slot, id, count}]."""
+    """Parse a player Inventory SNBT list into [{slot, id, count, enchants}]."""
     if not snbt:
         return []
     s = snbt.strip()
@@ -788,9 +945,13 @@ def _parse_inventory(snbt):
             continue
         mslot = re.search(r"\bSlot:\s*(-?\d+)", top)
         mcount = re.search(r"\b[Cc]ount:\s*(\d+)", top)
-        items.append({"slot": int(mslot.group(1)) if mslot else None,
-                      "id": mid.group(1),
-                      "count": int(mcount.group(1)) if mcount else 1})
+        entry = {"slot": int(mslot.group(1)) if mslot else None,
+                 "id": mid.group(1),
+                 "count": int(mcount.group(1)) if mcount else 1}
+        ench = _snbt_enchants(elem)
+        if ench:
+            entry["enchants"] = ench
+        items.append(entry)
     return items
 
 
@@ -858,12 +1019,20 @@ def api_player_inventory():
     name = (request.args.get("name") or "").strip()
     if not _NAME_RE.fullmatch(name):
         return jsonify({"error": "Invalid player name."}), 400
-    if name not in _online_names():
-        return jsonify({"online": False, "items": []})
-    items = _parse_inventory(_entity_scalar(_rcon_query_full(f"data get entity {name} Inventory")))
-    for it in items:
+    online = name in _online_names()
+    if online:  # live entity over RCON
+        items = _parse_inventory(_entity_scalar(_rcon_query_full(f"data get entity {name} Inventory")))
+        ender = _parse_inventory(_entity_scalar(_rcon_query_full(f"data get entity {name} EnderItems")))
+    else:       # last-saved player.dat
+        folder = _current_server_folder()
+        nbt = _offline_playerdata(folder, name) if folder else None
+        if not nbt:
+            return jsonify({"online": False, "items": [], "ender": []})
+        items = _nbt_items(nbt.get("Inventory"))
+        ender = _nbt_items(nbt.get("EnderItems"))
+    for it in items + ender:
         it["texture"] = _texture_for(it["id"])
-    return jsonify({"online": True, "items": items})
+    return jsonify({"online": online, "items": items, "ender": ender})
 
 
 def _rcon_query_full(cmd):
