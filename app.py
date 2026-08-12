@@ -21,11 +21,11 @@ from mcstatus import JavaServer
 HERE = Path(__file__).resolve().parent
 
 DEFAULTS = {
-    "servers_root": r"C:\path\to\Minecraft Servers",  # set in config.json
-    "bot_dir": r"C:\path\to\MinecraftServerDiscordBot",  # set in config.json
+    "servers_root": r"C:\path\to\Minecraft Servers",
+    "bot_dir": r"C:\path\to\MinecraftServerDiscordBot",
     "playit_exe": r"C:\Program Files\playit_gg\bin\playit.exe",
     "playit_log": r"C:\ProgramData\playit_gg\logs\playitd.log",
-    "playit_address": "",  # the address players join (set in config.json)
+    "playit_address": "",  # the address players join
     "backup_keep": 10,  # how many world backups to retain
     "restart_time": "",  # daily restart "HH:MM" (24h); "" disables
     "auto_restart": True,  # relaunch a server if it dies unexpectedly (crash)
@@ -827,8 +827,15 @@ def api_player_detail():
     return jsonify(d)
 
 
-def rcon_command_full(host, port, password, command, timeout=8.0):
-    """RCON exec that reassembles multi-packet responses (for large data like Inventory)."""
+def rcon_session(host, port, password, commands, timeout=8.0):
+    """Run several commands over ONE authed RCON connection, reassembling each
+    multi-packet response. Returns a list of bodies aligned with `commands`.
+
+    Per command we read its first response packet BEFORE sending an empty 'sentinel'
+    command whose reply (a distinct request id) marks the end of the output. Reading
+    first avoids pipelining two packets at the server: Minecraft (and some modded
+    RCON servers) close the connection if a second request arrives before the first
+    response is read. We only accumulate packets whose id matches the command."""
     with socket.create_connection((host, port), timeout=timeout) as sock:
         sock.settimeout(timeout)
         _rcon_send(sock, 3, password)
@@ -838,15 +845,26 @@ def rcon_command_full(host, port, password, command, timeout=8.0):
                 if rid == -1:
                     raise RconError("authentication failed")
                 break
-        _rcon_send(sock, 2, command, req_id=1)
-        _rcon_send(sock, 2, "", req_id=2)  # sentinel; its reply marks the end of cmd output
-        body = ""
-        while True:
-            rid, _pt, chunk = _rcon_recv(sock)
-            if rid == 2:
-                break
-            body += chunk
-        return body
+        out = []
+        for i, command in enumerate(commands):
+            cmd_id, end_id = 100 + 2 * i, 101 + 2 * i
+            _rcon_send(sock, 2, command, req_id=cmd_id)
+            rid, _pt, chunk = _rcon_recv(sock)      # first packet before the sentinel
+            body = chunk if rid == cmd_id else ""
+            _rcon_send(sock, 2, "", req_id=end_id)  # sentinel marks the end of output
+            while True:
+                rid, _pt, chunk = _rcon_recv(sock)
+                if rid == end_id:
+                    break
+                if rid == cmd_id:
+                    body += chunk
+            out.append(body)
+        return out
+
+
+def rcon_command_full(host, port, password, command, timeout=8.0):
+    """RCON exec that reassembles multi-packet responses (for large data like Inventory)."""
+    return rcon_session(host, port, password, [command], timeout)[0]
 
 
 def _snbt_top_elements(s):
@@ -1020,9 +1038,11 @@ def api_player_inventory():
     if not _NAME_RE.fullmatch(name):
         return jsonify({"error": "Invalid player name."}), 400
     online = name in _online_names()
-    if online:  # live entity over RCON
-        items = _parse_inventory(_entity_scalar(_rcon_query_full(f"data get entity {name} Inventory")))
-        ender = _parse_inventory(_entity_scalar(_rcon_query_full(f"data get entity {name} EnderItems")))
+    if online:  # live entity over RCON — both reads share one connection
+        res = _rcon_query_multi([f"data get entity {name} Inventory",
+                                 f"data get entity {name} EnderItems"]) or [None, None]
+        items = _parse_inventory(_entity_scalar(res[0]))
+        ender = _parse_inventory(_entity_scalar(res[1]))
     else:       # last-saved player.dat
         folder = _current_server_folder()
         nbt = _offline_playerdata(folder, name) if folder else None
@@ -1036,13 +1056,23 @@ def api_player_inventory():
 
 
 def _rcon_query_full(cmd):
+    res = _rcon_query_multi([cmd])
+    return res[0] if res else None
+
+
+def _rcon_query_multi(cmds):
+    """Run several read-only commands on one RCON connection; None on failure.
+    Retries once, since a fresh connection often succeeds after a transient hiccup."""
     rc = _server_rcon()
     if not rc:
         return None
-    try:
-        return rcon_command_full(*rc, cmd)
-    except (OSError, RconError):
-        return None
+    for attempt in (0, 1):
+        try:
+            return rcon_session(*rc, cmds)
+        except (OSError, RconError):
+            if attempt:
+                return None
+            time.sleep(0.15)
 
 
 @app.post("/api/server/player")

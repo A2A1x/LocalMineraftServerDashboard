@@ -1,37 +1,85 @@
 """Assert-based checks for the pure logic. Run: py test_app.py"""
+import gzip
 import os
-import tempfile
-from pathlib import Path
-
 import socket
 import struct
+import tempfile
 import threading
+from pathlib import Path
 
 from app import (
+    HERE,
+    _NBT,
     _NAME_RE,
+    _entity_scalar,
+    _fmt_enchant,
+    _idle_action,
     _is_bot_cmdline,
     _is_server_proc,
+    _json_names,
+    _nbt_enchants,
+    _nbt_items,
+    _nbt_vitals,
+    _parse_inventory,
     _prune_backups,
     _read_mem,
     _set_mem,
+    _texture_for,
     merge_env,
     rcon_command,
+    rcon_session,
     scan_servers,
 )
+
+
+# ---- RCON test doubles ----
+
+def _recv_packet(c):
+    raw = b""
+    while len(raw) < 4:
+        raw += c.recv(4 - len(raw))
+    (ln,) = struct.unpack("<i", raw)
+    data = b""
+    while len(data) < ln:
+        data += c.recv(ln - len(data))
+    rid, ptype = struct.unpack("<ii", data[:8])
+    return rid, ptype, data[8:-2].decode()
+
+
+def _send_packet(c, rid, ptype, body):
+    d = struct.pack("<ii", rid, ptype) + body.encode() + b"\x00\x00"
+    c.sendall(struct.pack("<i", len(d)) + d)
+
+
+def _fake_rcon(handle):
+    """Bind a loopback socket, serve `handle(conn)` once in a thread, return host, port."""
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen()
+
+    def serve():
+        c, _ = srv.accept()
+        try:
+            handle(c)
+        except OSError:
+            pass
+        finally:
+            srv.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    return srv.getsockname()
 
 
 def test_scan_servers():
     with tempfile.TemporaryDirectory() as root:
         root = Path(root)
-        # a real server folder
         mc = root / "My Server"
         mc.mkdir()
         (mc / "server.properties").write_text("server-port=25570\nmax-players=8\n")
         (mc / "start.bat").write_text("java -jar x.jar")
         (mc / "run.bat").write_text("java -jar x.jar")
         (mc / "server.jar").write_text("")
-        # a non-server folder (no server.properties) must be ignored
-        (root / "not-a-server").mkdir()
+        (root / "not-a-server").mkdir()                # no server.properties -> ignored
         (root / "not-a-server" / "readme.txt").write_text("hi")
 
         servers = scan_servers(root)
@@ -41,8 +89,7 @@ def test_scan_servers():
         assert s["scripts"] == ["run.bat", "start.bat"], s["scripts"]
         assert s["port"] == 25570, s["port"]
 
-    # missing root is handled, not crashing
-    assert scan_servers(root / "gone") == []
+    assert scan_servers(root / "gone") == []           # missing root doesn't crash
 
 
 def test_scan_default_port():
@@ -63,10 +110,10 @@ def test_merge_env_preserves_token_and_comments():
     out = merge_env(original, {"CHANNEL_ID": "999", "POLL_INTERVAL": "15", "GUILD_ID": ""})
     lines = out.splitlines()
     assert "# comment stays" in lines
-    assert "DISCORD_TOKEN=SECRET.value" in lines  # untouched
-    assert "CHANNEL_ID=999" in lines               # updated in place
+    assert "DISCORD_TOKEN=SECRET.value" in lines        # untouched
+    assert "CHANNEL_ID=999" in lines                    # updated in place
     assert "CHANNEL_ID=111" not in lines
-    assert "POLL_INTERVAL=15" in lines             # appended (was missing)
+    assert "POLL_INTERVAL=15" in lines                  # appended (was missing)
     assert not any(l.startswith("GUILD_ID") for l in lines)  # empty -> skipped
     assert "MC_HOST=127.0.0.1" in lines
 
@@ -91,41 +138,38 @@ def test_is_server_proc():
 
 def test_rcon_roundtrip():
     """Fake RCON server: verifies auth + command framing against a real socket."""
-    def recv_packet(c):
-        raw = b""
-        while len(raw) < 4:
-            raw += c.recv(4 - len(raw))
-        (ln,) = struct.unpack("<i", raw)
-        data = b""
-        while len(data) < ln:
-            data += c.recv(ln - len(data))
-        rid, ptype = struct.unpack("<ii", data[:8])
-        return rid, ptype, data[8:-2].decode()
-
-    def send_packet(c, rid, ptype, body):
-        d = struct.pack("<ii", rid, ptype) + body.encode() + b"\x00\x00"
-        c.sendall(struct.pack("<i", len(d)) + d)
-
-    srv = socket.socket()
-    srv.bind(("127.0.0.1", 0))
-    srv.listen()
-    host, port = srv.getsockname()
     result = {}
 
-    def handle():
-        c, _ = srv.accept()
-        rid, ptype, body = recv_packet(c)          # auth (type 3)
+    def handle(c):
+        rid, ptype, body = _recv_packet(c)                          # auth (type 3)
         result["auth_type"] = ptype
-        send_packet(c, rid if body == "secret" else -1, 2, "")  # auth response
-        rid, ptype, body = recv_packet(c)          # command (type 2)
-        send_packet(c, rid, 0, f"ran: {body}")
-        c.close()
+        _send_packet(c, rid if body == "secret" else -1, 2, "")     # auth response
+        rid, ptype, body = _recv_packet(c)                          # command (type 2)
+        _send_packet(c, rid, 0, f"ran: {body}")
 
-    threading.Thread(target=handle, daemon=True).start()
+    host, port = _fake_rcon(handle)
     out = rcon_command(host, port, "secret", "list", timeout=3)
-    srv.close()
     assert result["auth_type"] == 3, result
     assert out == "ran: list", out
+
+
+def test_rcon_session():
+    """One authed connection runs multiple commands; multi-packet replies reassemble
+    and each command only collects its own request id."""
+    def handle(c):
+        rid, _pt, _b = _recv_packet(c)                 # auth
+        _send_packet(c, rid, 2, "")
+        while True:
+            rid, _pt, body = _recv_packet(c)
+            if body == "":                             # sentinel -> empty reply
+                _send_packet(c, rid, 0, "")
+            else:                                      # split reply across two packets
+                _send_packet(c, rid, 0, "[part1]")
+                _send_packet(c, rid, 0, f"[{body}]")
+
+    host, port = _fake_rcon(handle)
+    out = rcon_session(host, port, "secret", ["list", "seed"], timeout=3)
+    assert out == ["[part1][list]", "[part1][seed]"], out
 
 
 def test_valid_player_name():
@@ -138,34 +182,25 @@ def test_valid_player_name():
 def test_prune_backups():
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)
-        made = []
         for i in range(5):
             f = d / f"world-{i}.zip"
             f.write_text("x")
-            os.utime(f, (i, i))  # older -> newer by mtime
-            made.append(f)
+            os.utime(f, (i, i))                        # older -> newer by mtime
         _prune_backups(d, keep=3)
         left = {p.name for p in d.glob("*.zip")}
         assert left == {"world-2.zip", "world-3.zip", "world-4.zip"}, left  # newest 3 kept
 
 
 def test_idle_action():
-    from app import _idle_action
     T = 15 * 60
-    # unknown player count -> keep state
-    assert _idle_action(None, 100.0, True, 200.0, T) == ("none", 100.0, True)
-    # players online -> reset the timer
-    assert _idle_action(3, 100.0, True, 200.0, T) == ("reset", None, False)
-    # just went empty -> warn once, start the clock
-    assert _idle_action(0, None, False, 500.0, T) == ("alert", 500.0, True)
-    # still empty, under threshold -> nothing
-    assert _idle_action(0, 500.0, True, 500.0 + 60, T) == ("none", 500.0, True)
-    # empty past threshold -> shutdown
-    assert _idle_action(0, 500.0, True, 500.0 + T, T)[0] == "shutdown"
+    assert _idle_action(None, 100.0, True, 200.0, T) == ("none", 100.0, True)   # unknown -> keep state
+    assert _idle_action(3, 100.0, True, 200.0, T) == ("reset", None, False)     # online -> reset timer
+    assert _idle_action(0, None, False, 500.0, T) == ("alert", 500.0, True)     # just emptied -> warn, start clock
+    assert _idle_action(0, 500.0, True, 500.0 + 60, T) == ("none", 500.0, True)  # under threshold -> nothing
+    assert _idle_action(0, 500.0, True, 500.0 + T, T)[0] == "shutdown"          # past threshold -> shutdown
 
 
 def test_entity_scalar():
-    from app import _entity_scalar
     assert _entity_scalar("_A2A1 has the following entity data: 20.0f") == "20.0f"
     assert _entity_scalar("P has the following entity data: [-261.45d, 65.0d, 227.36d]") == "[-261.45d, 65.0d, 227.36d]"
     assert _entity_scalar("No entity was found") is None
@@ -173,7 +208,6 @@ def test_entity_scalar():
 
 
 def test_json_names():
-    from app import _json_names
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)
         (d / "ops.json").write_text('[{"name":"Notch","uuid":"x"},{"name":"Alex"}]')
@@ -184,7 +218,6 @@ def test_json_names():
 
 
 def test_parse_inventory():
-    from app import _parse_inventory
     snbt = ('[{Slot: 0b, id: "minecraft:diamond_sword", Count: 1b, '
             'tag: {Enchantments: [{id: "minecraft:sharpness", lvl: 5s}]}}, '
             '{Slot: 9b, id: "minecraft:dirt", Count: 64b}, '
@@ -197,13 +230,12 @@ def test_parse_inventory():
     assert all("sharpness" not in it["id"] for it in items)  # nested id not captured
     assert len(items) == 3, got
     sword = next(it for it in items if it["slot"] == 0)
-    assert sword["enchants"] == ["Sharpness V"]                # enchant read from nested tag
+    assert sword["enchants"] == ["Sharpness V"]              # enchant read from nested tag
     assert "enchants" not in next(it for it in items if it["slot"] == 9)
     assert _parse_inventory("") == []
 
 
 def test_enchants():
-    from app import _fmt_enchant, _nbt_enchants
     assert _fmt_enchant("minecraft:sharpness", 5) == "Sharpness V"
     assert _fmt_enchant("minecraft:mending", 1) == "Mending"   # level omitted at 1
     assert _fmt_enchant("modid:soul_speed", 3) == "Soul Speed III"
@@ -215,36 +247,27 @@ def test_enchants():
 
 
 def test_texture_for_vanilla():
-    from app import HERE, _texture_for
     if (HERE / "static" / "items" / "minecraft" / "diamond_sword.png").is_file():
         assert _texture_for("minecraft:diamond_sword") == "/static/items/minecraft/diamond_sword.png"
 
 
 def test_render_icons():
-    from app import HERE, _texture_for
     render = HERE / "static" / "items" / "render"
     if not (render / "stone.png").is_file():
         return  # pre-rendered 3D icons not shipped in this checkout
-    # blocks prefer the 3D render over the flat face texture
-    assert _texture_for("minecraft:stone") == "/static/items/render/stone.png"
+    assert _texture_for("minecraft:stone") == "/static/items/render/stone.png"         # 3D render preferred
     assert _texture_for("minecraft:spruce_slab") == "/static/items/render/spruce_slab.png"
-    # special 3D renders (shield + mob heads) resolve to the render dir
-    if (HERE / "static" / "items" / "render" / "shield.png").is_file():
+    if (render / "shield.png").is_file():                                              # special renders
         assert _texture_for("minecraft:shield") == "/static/items/render/shield.png"
         assert _texture_for("minecraft:wither_skeleton_skull") == "/static/items/render/wither_skeleton_skull.png"
-    # a flat-filled item (crossbow uses the crossbow_standby texture) resolves to a flat icon
-    if (HERE / "static" / "items" / "minecraft" / "crossbow.png").is_file():
+    if (HERE / "static" / "items" / "minecraft" / "crossbow.png").is_file():           # flat-filled item
         assert _texture_for("minecraft:crossbow") == "/static/items/minecraft/crossbow.png"
-    # a plain item (no render) still resolves to its flat texture
-    if (HERE / "static" / "items" / "minecraft" / "apple.png").is_file():
+    if (HERE / "static" / "items" / "minecraft" / "apple.png").is_file():              # plain flat item
         assert _texture_for("minecraft:apple") == "/static/items/minecraft/apple.png"
 
 
 def test_nbt_playerdata():
     """Round-trip a hand-built player.dat NBT through the reader + extractors."""
-    import gzip as _gz
-    from app import _NBT, _nbt_items, _nbt_vitals
-
     def s(v):
         e = v.encode(); return struct.pack(">H", len(e)) + e
 
@@ -273,7 +296,7 @@ def test_nbt_playerdata():
     )
     raw = struct.pack(">b", 10) + s("") + inner        # root compound, empty name
 
-    for data in (raw, _gz.compress(raw)):              # reader accepts raw and gzip'd
+    for data in (raw, gzip.compress(raw)):             # reader accepts raw and gzip'd
         nbt = _NBT(data).parse()
         assert abs(nbt["Health"] - 19.5) < 1e-4
         v = _nbt_vitals(nbt)
@@ -293,27 +316,12 @@ def test_jvm_memory():
         assert _read_mem(d) == {"xmx": "8G", "xms": "4G"}
         assert _set_mem(d, "12G", "6G") == 1
         assert _read_mem(d) == {"xmx": "12G", "xms": "6G"}
-        # untouched keys when a value is blank
-        assert _set_mem(d, "", "8192M") == 1
+        assert _set_mem(d, "", "8192M") == 1                # blank value leaves that key alone
         assert _read_mem(d) == {"xmx": "12G", "xms": "8192M"}
 
 
 if __name__ == "__main__":
-    test_scan_servers()
-    test_scan_default_port()
-    test_merge_env_preserves_token_and_comments()
-    test_is_bot_cmdline()
-    test_is_server_proc()
-    test_rcon_roundtrip()
-    test_valid_player_name()
-    test_prune_backups()
-    test_idle_action()
-    test_entity_scalar()
-    test_json_names()
-    test_parse_inventory()
-    test_enchants()
-    test_texture_for_vanilla()
-    test_render_icons()
-    test_nbt_playerdata()
-    test_jvm_memory()
+    for _name, _fn in list(globals().items()):
+        if _name.startswith("test_") and callable(_fn):
+            _fn()
     print("all tests passed")

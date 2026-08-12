@@ -4,7 +4,7 @@ gui display pose + fixed face shading + tint), rasterizes each block item to a
 PNG, and writes them under an output dir. Run once; the dashboard just serves
 the PNGs (no runtime image deps).
 
-Usage: py build_icons.py <client.jar> <out_dir> [name1 name2 ...]
+Usage: py render_icons.py <client.jar> <out_dir> [name1 name2 ...]
        (extra names = render just those, for quick visual checks)
 """
 import json
@@ -171,7 +171,7 @@ def rasterize(elements, tx, rot, scale, flat_light=False):
     R = rot_matrix(rx * DEG, (ry + YAW) * DEG, rz * DEG)  # our yaw is offset from MC's camera
 
     def project(p):
-        v = R @ (np.array(p, float) - 8.0)      # center then rotate
+        v = R @ (np.array(p, float) - 8.0)
         k = (SIZE * scale / 16.0) * 1.28 * ZOOM
         return SIZE / 2 + v[0] * k, SIZE / 2 - v[1] * k, v[2]
 
@@ -326,13 +326,13 @@ def main():
         if im and im.getbbox():
             im.save(OUT / f"{name}.png"); blocks += 1
             if ONLY: print("block", name, im.getbbox())
-    for name, tex in HEAD_TEX.items():          # mob heads
+    for name, tex in HEAD_TEX.items():
         if ONLY and name not in items:
             continue
         im = render_head(tex)
         if im and im.getbbox():
             im.save(OUT / f"{name}.png"); heads += 1
-    if not ONLY or "shield" in items:           # shield
+    if not ONLY or "shield" in items:
         im = render_shield()
         if im and im.getbbox():
             im.save(OUT / "shield.png"); shields += 1
