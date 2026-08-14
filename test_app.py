@@ -17,6 +17,7 @@ from app import (
     _is_bot_cmdline,
     _is_server_proc,
     _json_names,
+    _keep_awake,
     _nbt_enchants,
     _nbt_items,
     _nbt_vitals,
@@ -307,6 +308,11 @@ def test_nbt_playerdata():
         assert v["pos"] == {"x": 1.0, "y": 64.0, "z": -3.0}
         assert _nbt_items(nbt["Inventory"]) == [{"slot": 0, "id": "minecraft:stone", "count": 64}]
         assert _nbt_items(nbt["EnderItems"]) == [{"slot": 3, "id": "minecraft:diamond", "count": 5}]
+
+
+def test_keep_awake():
+    _keep_awake(True)   # sets the execution state on Windows, no-op elsewhere
+    _keep_awake(False)  # must always release it, whatever the platform
 
 
 def test_jvm_memory():

@@ -1,3 +1,5 @@
+import atexit
+import ctypes
 import gzip
 import json
 import os
@@ -34,6 +36,7 @@ DEFAULTS = {
     "discord_alerts": False,  # also post alerts to the bot's Discord channel
     "idle_shutdown_min": 15,  # stop the server after this many minutes with no players; 0 disables
     "idle_grace_min": 5,  # don't start the idle clock until the server's been up this long
+    "keep_awake": True,  # keep the PC awake (system sleep only) while the dashboard is open; sleeps normally once closed
     "host": "127.0.0.1",
     "port": 8765,
 }
@@ -1957,6 +1960,20 @@ def _adopt_running():
 
 # ---------- entrypoints ----------
 
+def _keep_awake(enable=True):
+    """Stop the machine sleeping while the dashboard is open so the server/tunnel
+    stay reachable. Prevents system sleep only (the display may still turn off);
+    Windows-only, no-op elsewhere. Sleep behaviour returns to normal on exit."""
+    if os.name != "nt":
+        return
+    ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+    try:
+        ctypes.windll.kernel32.SetThreadExecutionState(
+            ES_CONTINUOUS | (ES_SYSTEM_REQUIRED if enable else 0))
+    except Exception:
+        pass
+
+
 def _serve():
     app.run(host=CONFIG["host"], port=CONFIG["port"], threaded=True, use_reloader=False)
 
@@ -1981,6 +1998,9 @@ def run_desktop():
 
 
 if __name__ == "__main__":
+    if CONFIG.get("keep_awake", True):  # runs on the main thread, which lives for the app's lifetime
+        _keep_awake(True)
+        atexit.register(_keep_awake, False)
     _adopt_running()  # reconnect to any server/bot already running
     threading.Thread(target=_ensure_playit, daemon=True).start()
     threading.Thread(target=_tps_worker, daemon=True).start()  # spark TPS polling

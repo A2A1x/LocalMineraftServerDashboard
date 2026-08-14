@@ -64,6 +64,7 @@ copy config.example.json config.json
 | `restart_time` / `auto_restart` | Daily restart `HH:MM` (blank = off); relaunch on crash |
 | `tps_alert` / `disk_alert_gb` / `discord_alerts` | Alert thresholds; also post alerts to Discord |
 | `idle_shutdown_min` / `idle_grace_min` | Stop the server after N min with no players (0 = off); ignore the first `idle_grace_min` after startup |
+| `keep_awake` | Keep the PC awake (prevents system sleep, not the display) while the dashboard is open so the server/tunnel stay reachable; sleeps normally once closed. Windows-only |
 | `playit_exe` / `playit_log` | Paths to the playit CLI and its log (defaults are the standard install) |
 | `host` / `port` | Where the dashboard listens |
 

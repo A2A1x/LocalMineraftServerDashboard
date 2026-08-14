@@ -12,6 +12,7 @@
   "discord_alerts": false,
   "idle_shutdown_min": 15,
   "idle_grace_min": 5,
+  "keep_awake": true,
   "host": "127.0.0.1",
   "port": 8765
 }
