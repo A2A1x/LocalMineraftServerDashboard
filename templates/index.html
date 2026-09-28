@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Minecraft Server Dashboard</title>
+<link rel="icon" href="/static/icon.png">
 <style>
   :root {
     color-scheme: dark;
@@ -56,6 +57,7 @@
   #side-join { padding: 10px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255,255,255,.02);
                display: flex; flex-direction: column; gap: 6px; }
   #side-join:empty { display: none; }
+  #side-join .chip { font-size: 11px; padding: 0 8px; } #side-join .chip .i { display: none; }
   .lbl { color: var(--dim); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
   .hint { color: var(--dim); font-size: 11px; padding: 0 8px; line-height: 1.9; }
   kbd { font: 10.5px var(--mono); padding: 1px 5px; border: 1px solid var(--line2); border-bottom-width: 2px; border-radius: 4px; color: var(--muted); }
@@ -350,7 +352,7 @@
   .addr-big { display: flex; align-items: center; gap: 10px; padding: 12px 14px; margin-bottom: 14px; border: 1px dashed var(--line2);
               border-radius: 11px; background: var(--inset); }
   .addr-big div { flex: 1; min-width: 0; }
-  .addr-big b { display: block; font: 600 15px var(--mono); overflow: hidden; text-overflow: ellipsis; }
+  .addr-big b { display: block; font: 600 15px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mods { max-height: 380px; overflow: auto; margin-top: 10px; }
   .mods div { padding: 5px 8px; border-radius: 6px; font: 12px var(--mono); color: #c9d1dd; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mods div:nth-child(odd) { background: rgba(255,255,255,.022); }
@@ -757,7 +759,7 @@ function renderOverview() {
   setHTML($('#page-sub'), on ? `${pill(s.state)}<span>${esc(s.name)}</span><span>·</span><span>up ${esc(s.uptime)}</span>${up && p ? `<span>·</span><span>${p.online}/${p.max} players</span>` : ''}`
     : '<span>No server running</span>');
   setHTML($('#side-join'), lp && lp.address
-    ? `<span class="lbl">Join address</span><button class="chip" data-copy="${esc(lp.address)}" title="Copy">${ic('copy')}<span>${esc(lp.address)}</span></button>` : '');
+    ? `<span class="lbl">Join address</span><button class="chip" data-copy="${esc(lp.address)}" title="Copy ${esc(lp.address)}">${ic('copy')}<span>${esc(lp.address)}</span></button>` : '');
   const botOn = !!(b && b.running), tunOn = !!ps.running;
   $('#start-all').disabled = on && botOn && tunOn;
   $('#stop-mc').disabled = !on && !tunOn;
@@ -911,7 +913,7 @@ async function refreshPlayit() {
   const s = d.status || {};
   setHTML($('#playit-address'), d.address
     ? `<div class="addr-big"><div><span class="lbl">Join address</span><b>${esc(d.address)}</b></div>
-       <button class="btn sm" data-copy="${esc(d.address)}">${ic('copy')}Copy</button></div>` : '');
+       <button class="btn sm icon" data-copy="${esc(d.address)}" title="Copy">${ic('copy')}</button></div>` : '');
   const b = $('#playit-badge');
   b.textContent = s.error ? 'not found' : (s.running ? 'running' : (s.phase || 'stopped'));
   b.className = 'pill ' + (s.running ? 'ok' : s.error ? 'bad' : '');

@@ -1,29 +1,104 @@
 # Local Minecraft Server Dashboard
 
-A native Windows desktop app (Flask UI in a `pywebview` window) to run and monitor your local
-Minecraft servers, plus the companion [Discord bot](https://github.com/A2A1x/MinecraftServerDiscordBot) and a
-[playit.gg](https://playit.gg) tunnel — all from one screen.
+![Minecraft Server Dashboard — every tab at a glance](docs/splash.png)
 
-![Dashboard - Overview tab](docs/dashboard.png)
+A native Windows desktop app to run and monitor your local Minecraft servers, plus the companion
+[Discord bot](https://github.com/A2A1x/MinecraftServerDiscordBot) and a [playit.gg](https://playit.gg)
+tunnel — all from one window. It's a Flask UI in a `pywebview` (Edge WebView2) window, packaged as a
+single `.exe`.
 
-Features:
+**[Tour](#tour)** · **[Requirements](#requirements)** · **[Run](#run)** · **[Config](#config-configjson)** · **[Notes](#notes)**
 
-- **Launch/stop** any server folder (one at a time), with a clean `stop` (world-save) before
-  any force-kill, and a **"stop with countdown"** that warns players first.
-- **Reconnect on reopen** — adopts a server/bot already running when you relaunch the app.
-- **Live console** (streamed for servers it started, tailed from `logs/latest.log` for adopted
-  ones) with level-coloured lines, filter, and command box. Adopted servers accept commands via
-  **RCON**.
-- **Player admin** — kick / ban / op / whitelist buttons; **quick actions** (save-all, weather,
-  time, …).
-- **Metrics** — CPU, RAM, threads, disk I/O, plus **TPS/MSPT** (via the spark mod over RCON) and
-  **history sparklines**.
-- **World backups** (save-off → zip → save-on, keep last N) and a per-server **config editor**
-  (`server.properties`, JVM `-Xmx/-Xms`, mod list).
-- **Alerts** for low TPS / low disk / crashes, shown in the UI and optionally posted to Discord.
-- **Scheduled daily restart**, **auto-restart on crash**, and **idle auto-shutdown** when no
-  players are on.
-- **playit** and **Discord bot** start/stop and console/settings.
+## Tour
+
+### Overview
+
+![Overview tab](docs/overview.png)
+
+Everything at a glance.
+
+- **Server card** — state, name, join address (click to copy), uptime, version, MOTD and who's online.
+  When the server is offline it turns into a **Start last server** button.
+- **Gauges** for **TPS** (colour shifts green → amber → red as it drops), **CPU**, **RAM** (against
+  system memory) and **players** (online / max).
+- **Services** — the Discord bot and playit tunnel, each with a one-click Start / Stop.
+- **History** — ~40 minutes of CPU, RAM, player count and TPS, sampled every 10 s, with min / max.
+- **Alerts** — low TPS, low disk space, crashes and idle-shutdown warnings, with relative timestamps
+  (optionally also posted to Discord).
+- **Console** — the live server log, with a jump to the full console.
+
+### Server
+
+![Server tab](docs/server.png)
+
+- **Servers** — every folder under your servers folder that has a `server.properties`, with its
+  port and start script (pick one if there are several). Only one runs at a time; starting one
+  stops any other.
+- **Status** — address, uptime, version, players, TPS / MSPT (plus the 5 s → 15 m series from
+  spark), CPU, memory, JVM threads, disk I/O and system RAM.
+- **Online now** — kick, ban, op or whitelist anyone who's on.
+- **Quick actions** — save-all, clear weather, day / night, and **stop with a 30 s warning** that
+  counts players down in chat first.
+- **Backups** — one-click world backup (save-off → zip → save-on, keeps the last N) and the list of
+  existing zips.
+- **Console** — level-coloured live log (streamed for servers the app started, tailed from
+  `logs/latest.log` for ones it reconnected to), filter, pause, download `latest.log`, and a command
+  box with ↑ / ↓ history. Reconnected servers take commands over **RCON**.
+- **Stop** is always a clean `stop` (world save) before any force-kill.
+
+### Players
+
+![Players tab](docs/players.png)
+
+- **Roster** of everyone the server knows (usercache, ops, whitelist, bans) with search and
+  All / Online / Allowed / OPs / Banned filters. Online players sort to the top.
+- **Player detail** — XP level, hearts and hunger drawn with the game's own sprites, gamemode,
+  position and dimension, plus **kill / heal / feed / starve**, gamemode switch and **teleport**.
+- **Inventory and ender chest** laid out like the in-game screen, with armour, offhand, stack
+  counts, an enchantment shimmer and Minecraft-style hover tooltips (item name + enchantments).
+  Modded item icons are pulled from the server's mod jars.
+- **Op / whitelist / kick / ban** (and their undo) right from the header.
+- Online players are read live over RCON; offline players come from their saved
+  `playerdata/*.dat`, with the live-only actions greyed out.
+
+### Discord Bot
+
+![Discord Bot tab](docs/bot.png)
+
+Start / stop the [companion bot](https://github.com/A2A1x/MinecraftServerDiscordBot), edit its
+`.env` settings (channel, guild, the server it polls, poll interval) and watch its output. Your
+`DISCORD_TOKEN` is kept in the `.env` and never shown.
+
+### Tunnel
+
+![Tunnel tab](docs/tunnel.png)
+
+The playit.gg join address with a copy button, the tunnel's phase / uptime / version, manual start /
+stop and the agent log. The tunnel **follows the server**: it comes up when a server starts and goes
+down when it stops.
+
+### Config
+
+![Config tab](docs/config.png)
+
+- Pick the **servers folder** (native folder picker).
+- Edit a server's **`server.properties`** — MOTD, difficulty, gamemode, player cap, view / simulation
+  distance, spawn protection and toggles for PvP, hardcore, whitelist, the Nether, flight and
+  command blocks.
+- Set the JVM **memory** (`-Xmx` / `-Xms`) in its start script / `user_jvm_args.txt`.
+- Browse and filter the installed **mods**.
+
+### Around the app
+
+- **Sidebar** with live status dots for the server, bot and tunnel, and an online-player count. It
+  collapses to icons on narrow windows.
+- **Top bar** with **Start all**, **Server + tunnel** (stop both, keep the bot) and **Stop all**.
+  Destructive actions ask first; results and errors pop up as notifications.
+- **Runs itself**: a scheduled daily restart, auto-restart on crash, and idle auto-shutdown when
+  nobody's on. It can keep the PC awake while open (`keep_awake`).
+- **Reconnects on reopen** — adopts a server or bot that's already running when you launch it again.
+- **Keys:** <kbd>1</kbd>–<kbd>6</kbd> switch tabs and <kbd>/</kbd> jumps to the console command box.
+  The last-open tab is remembered.
 
 ## Requirements
 
@@ -73,20 +148,6 @@ copy config.example.json config.json
 | `keep_awake` | Keep the PC awake (prevents system sleep, not the display) while the dashboard is open so the server/tunnel stay reachable; sleeps normally once closed. Windows-only |
 | `playit_exe` / `playit_log` | Paths to the playit CLI and its log (defaults are the standard install) |
 | `host` / `port` | Where the dashboard listens |
-
-## Tabs
-
-**Overview** (server hero with TPS/CPU/RAM/player gauges, one-click bot/tunnel toggles, history
-graphs, alerts, console) · **Server** (start/stop, console, commands, quick actions, backups) ·
-**Players** (searchable roster with online/op/ban/whitelist filters → per-player detail: vitals, inventory + ender chest with Minecraft-style hover tooltips
-(item name + enchantments), kill/heal/feed/starve, gamemode, op/ban/whitelist/kick, teleport —
-live over RCON for online players, or read from the saved `playerdata/*.dat` for offline ones,
-with the live-entity actions greyed out) ·
-**Discord Bot** (start/stop + `.env` settings) · **Tunnel** (playit control + log) ·
-**Config** (pick the servers folder; per-server `server.properties`, memory, mods).
-
-Keys: <kbd>1</kbd>–<kbd>6</kbd> switch tabs, <kbd>/</kbd> jumps to the console command box. The
-last-open tab is remembered.
 
 ## Notes
 
