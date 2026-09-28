@@ -5,3 +5,6 @@ __pycache__/
 config.json
 state.json
 .env
+# built app
+MinecraftDashboard.exe
+build/

@@ -20,7 +20,9 @@ import psutil
 from flask import Flask, Response, jsonify, render_template, request, send_file
 from mcstatus import JavaServer
 
-HERE = Path(__file__).resolve().parent
+FROZEN = getattr(sys, "frozen", False)  # running as the PyInstaller-built .exe
+HERE = Path(sys.executable).parent if FROZEN else Path(__file__).resolve().parent  # config.json / state.json
+RES = Path(getattr(sys, "_MEIPASS", HERE))  # bundled templates/ + static/
 
 DEFAULTS = {
     "servers_root": r"C:\path\to\Minecraft Servers",
@@ -75,7 +77,7 @@ DISK_ALERT_GB = float(CONFIG["disk_alert_gb"])
 DISCORD_ALERTS = bool(CONFIG["discord_alerts"])
 IDLE_SHUTDOWN_MIN = float(CONFIG["idle_shutdown_min"])
 IDLE_GRACE_MIN = float(CONFIG["idle_grace_min"])
-MC_ICONS = (HERE / "static" / "mc" / "heart_full.png").is_file()  # extracted MC heart/hunger sprites
+MC_ICONS = (RES / "static" / "mc" / "heart_full.png").is_file()  # extracted MC heart/hunger sprites
 
 # Launch children without flashing a console window (matters under pythonw).
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
@@ -369,7 +371,7 @@ def _graceful_stop(proc: _Managed, timeout: float = 90.0):
 
 # ---------- Flask ----------
 
-app = Flask(__name__)
+app = Flask(__name__, root_path=str(RES))
 
 
 @app.get("/")
@@ -971,9 +973,9 @@ def _texture_for(item_id):
     ns, _, name = item_id.partition(":")
     if not name:
         ns, name = "minecraft", ns
-    if ns == "minecraft" and (HERE / "static" / "items" / "render" / f"{name}.png").is_file():
+    if ns == "minecraft" and (RES / "static" / "items" / "render" / f"{name}.png").is_file():
         return f"/static/items/render/{name}.png"  # pre-rendered 3D block icon
-    if (HERE / "static" / "items" / ns / f"{name}.png").is_file():
+    if (RES / "static" / "items" / ns / f"{name}.png").is_file():
         return f"/static/items/{ns}/{name}.png"  # shipped vanilla flat texture
     folder = _current_server_folder()  # modded: pull from the selected server's mods
     if folder and (ns, name) in _icon_index(folder):
@@ -1889,10 +1891,11 @@ def run_web():
     _serve()
 
 
-def run_desktop():
+def run_desktop(serve=True):
     import webview
     url = f"http://{CONFIG['host']}:{CONFIG['port']}"
-    threading.Thread(target=_serve, daemon=True).start()
+    if serve:
+        threading.Thread(target=_serve, daemon=True).start()
     for _ in range(100):  # wait up to ~10s for Flask to accept connections
         if is_server_up(CONFIG["host"], CONFIG["port"], timeout=0.2):
             break
@@ -1903,6 +1906,11 @@ def run_desktop():
 
 
 if __name__ == "__main__":
+    if "--web" not in sys.argv and is_server_up(CONFIG["host"], CONFIG["port"], timeout=0.3):
+        # Already open (e.g. the .exe double-clicked twice): just show another window onto
+        # it rather than starting a second set of supervisors on the same servers.
+        run_desktop(serve=False)
+        sys.exit()
     if CONFIG.get("keep_awake", True):  # runs on the main thread, which lives for the app's lifetime
         _keep_awake(True)
         atexit.register(_keep_awake, False)

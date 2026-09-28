@@ -35,14 +35,19 @@ to adopted servers and TPS.
 
 ## Run
 
-Double-click the **Minecraft Dashboard** desktop shortcut (no console window), or:
+Build the app once (and again after pulling changes):
 
 ```bash
-run.bat
+build.bat
 ```
 
-`run.bat` installs deps and opens the app window. Flask is bound to `127.0.0.1` only (not
-network-reachable). To open in a browser instead (debugging):
+This produces **`MinecraftDashboard.exe`** in the project folder — a single-file Windows app with
+no console window. Double-click it, or right-click it → **Pin to Start** / **Pin to taskbar**. It
+reads `config.json` / `state.json` from the folder it sits in, so keep them next to it if you move
+it. Opening it while it's already running just opens another window onto the running instance.
+
+To run from source instead (development), `run.bat` installs deps and opens the app window.
+Flask is bound to `127.0.0.1` only (not network-reachable). To open in a browser instead (debugging):
 
 ```bash
 py app.py --web
