@@ -26,6 +26,7 @@ from app import (
     _read_mem,
     _set_mem,
     _texture_for,
+    format_duration,
     merge_env,
     rcon_command,
     rcon_session,
@@ -308,6 +309,12 @@ def test_nbt_playerdata():
         assert v["pos"] == {"x": 1.0, "y": 64.0, "z": -3.0}
         assert _nbt_items(nbt["Inventory"]) == [{"slot": 0, "id": "minecraft:stone", "count": 64}]
         assert _nbt_items(nbt["EnderItems"]) == [{"slot": 3, "id": "minecraft:diamond", "count": 5}]
+
+
+def test_format_duration():
+    assert format_duration(0) == "0s"
+    assert format_duration(3600) == "1h"
+    assert format_duration(90061) == "1d 1h 1m 1s"
 
 
 def test_keep_awake():

@@ -21,7 +21,8 @@ Features:
 - **World backups** (save-off → zip → save-on, keep last N) and a per-server **config editor**
   (`server.properties`, JVM `-Xmx/-Xms`, mod list).
 - **Alerts** for low TPS / low disk / crashes, shown in the UI and optionally posted to Discord.
-- **Scheduled daily restart** and **auto-restart on crash**.
+- **Scheduled daily restart**, **auto-restart on crash**, and **idle auto-shutdown** when no
+  players are on.
 - **playit** and **Discord bot** start/stop and console/settings.
 
 ## Requirements

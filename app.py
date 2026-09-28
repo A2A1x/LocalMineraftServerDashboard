@@ -107,45 +107,40 @@ def _rcon_send(sock, ptype: int, body: str, req_id: int = 0):
     sock.sendall(struct.pack("<i", len(data)) + data)
 
 
+def _rcon_auth(sock, password: str):
+    _rcon_send(sock, 3, password)  # SERVERDATA_AUTH
+    while True:  # some servers emit an empty value packet before the auth reply
+        req_id, ptype, _ = _rcon_recv(sock)
+        if ptype == 2:  # SERVERDATA_AUTH_RESPONSE
+            if req_id == -1:
+                raise RconError("authentication failed (wrong rcon.password)")
+            return
+
+
 def rcon_command(host: str, port: int, password: str, command: str, timeout: float = 5.0) -> str:
-    """Run a single command over RCON and return the server's response text."""
+    """Run a single command over RCON and return the server's (first packet of) response.
+    No end-of-output sentinel, so it's safe for 'stop', where the server may hang up."""
     with socket.create_connection((host, port), timeout=timeout) as sock:
         sock.settimeout(timeout)
-        _rcon_send(sock, 3, password)  # SERVERDATA_AUTH
-        while True:  # some servers emit an empty value packet before the auth reply
-            req_id, ptype, _ = _rcon_recv(sock)
-            if ptype == 2:  # SERVERDATA_AUTH_RESPONSE
-                if req_id == -1:
-                    raise RconError("authentication failed (wrong rcon.password)")
-                break
+        _rcon_auth(sock, password)
         _rcon_send(sock, 2, command)  # SERVERDATA_EXECCOMMAND
         _, _, body = _rcon_recv(sock)
         return body
 
-# Reuse the bot's tested helpers; fall back to tiny local copies if the bot
-# repo isn't where config says (dashboard still works, just less DRY).
-sys.path.insert(0, str(BOT_DIR))
-try:
-    from monitor import format_duration, is_server_up  # type: ignore
-except Exception:  # pragma: no cover - only hit on a misconfigured bot_dir
-    import socket
 
-    def is_server_up(host, port, timeout=2.0):
-        try:
-            with socket.create_connection((host, port), timeout=timeout):
-                return True
-        except OSError:
-            return False
+def is_server_up(host, port, timeout=2.0):
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
-    def format_duration(seconds):
-        s = int(seconds)
-        d, r = divmod(s, 86400)
-        h, r = divmod(r, 3600)
-        m, s = divmod(r, 60)
-        return " ".join(
-            p for p in (f"{d}d" if d else "", f"{h}h" if h else "",
-                        f"{m}m" if m else "", f"{s}s") if p
-        ) or "0s"
+
+def format_duration(seconds):
+    d, r = divmod(int(seconds), 86400)
+    h, r = divmod(r, 3600)
+    m, s = divmod(r, 60)
+    return " ".join(f"{v}{u}" for v, u in ((d, "d"), (h, "h"), (m, "m"), (s, "s")) if v) or "0s"
 
 
 # ---------- pure helpers (unit-tested in test_app.py) ----------
@@ -212,8 +207,25 @@ def merge_env(text: str, updates: dict) -> str:
 
 # ---------- managed processes ----------
 
+def _kill(procs, timeout: float = 5):
+    """Terminate procs, then kill any still alive after timeout."""
+    for p in procs:
+        try:
+            p.terminate()
+        except psutil.Error:
+            pass
+    _, alive = psutil.wait_procs(procs, timeout=timeout)
+    for p in alive:
+        try:
+            p.kill()
+        except psutil.Error:
+            pass
+
+
 class _Managed:
     """Shared state/metrics for a process tree, keyed by self.pid."""
+
+    adopted = False
 
     def __init__(self, pid: int, label: str):
         self.pid = pid
@@ -221,27 +233,15 @@ class _Managed:
         self.started_at = time.time()
         self.log = deque(maxlen=500)
         self.stopping = False
-        self.adopted = False
         self._pcache = {}  # pid -> psutil.Process, kept across polls for cpu deltas
         self._io_prev = None  # (read_bytes, write_bytes, time) for disk I/O rate
 
     def kill_tree(self):
         try:
             parent = psutil.Process(self.pid)
-            procs = parent.children(recursive=True) + [parent]
+            _kill(parent.children(recursive=True) + [parent])
         except psutil.Error:
             return
-        for p in procs:
-            try:
-                p.terminate()
-            except psutil.Error:
-                pass
-        _, alive = psutil.wait_procs(procs, timeout=5)
-        for p in alive:
-            try:
-                p.kill()
-            except psutil.Error:
-                pass
 
     def metrics(self) -> dict:
         """Perf stats over the process tree: CPU% (machine-wide), RAM (MB), JVM
@@ -318,9 +318,10 @@ class AdoptedProc(_Managed):
     can read status/metrics and terminate it, but have no stdin/stdout, so the
     console log and console commands are unavailable and stop is a terminate."""
 
+    adopted = True
+
     def __init__(self, pid: int, label: str):
         super().__init__(pid, label)
-        self.adopted = True
         try:
             self.started_at = psutil.Process(pid).create_time()
         except psutil.Error:
@@ -347,25 +348,22 @@ BOT: _Managed | None = None
 
 def _graceful_stop(proc: _Managed, timeout: float = 90.0):
     proc.stopping = True
-    if getattr(proc, "adopted", False):
-        rc = _server_rcon()  # clean save via RCON if available; else terminate
-        if rc:
-            try:
+    sent = True
+    if proc.adopted:  # no stdin: clean save via RCON if available; else terminate
+        rc = _server_rcon()
+        try:
+            if rc:
                 rcon_command(*rc, "stop")
-                deadline = time.time() + timeout
-                while proc.alive() and time.time() < deadline:
-                    time.sleep(1)
-            except (OSError, RconError):
-                pass
-        if proc.alive():
-            proc.kill_tree()
+        except (OSError, RconError):
+            rc = None
+        sent = bool(rc)
     else:
         proc.send("stop")
-        deadline = time.time() + timeout
-        while proc.alive() and time.time() < deadline:
-            time.sleep(1)
-        if proc.alive():
-            proc.kill_tree()
+    deadline = time.time() + (timeout if sent else 0)
+    while proc.alive() and time.time() < deadline:
+        time.sleep(1)
+    if proc.alive():
+        proc.kill_tree()
     _playit_run("stop")  # the tunnel follows the server down
 
 
@@ -443,17 +441,7 @@ def _kill_existing_servers() -> int:
                 victims.append(proc)
         except psutil.Error:
             continue
-    for p in victims:
-        try:
-            p.terminate()
-        except psutil.Error:
-            pass
-    _, alive = psutil.wait_procs(victims, timeout=8)
-    for p in alive:
-        try:
-            p.kill()
-        except psutil.Error:
-            pass
+    _kill(victims, timeout=8)
     return n + len(victims)
 
 
@@ -492,20 +480,27 @@ def _launch_server(match: dict, script: str) -> int:
         bufsize=1,
         creationflags=NO_WINDOW,
     )
-    props = read_properties(folder / "server.properties")
     SERVER = Proc(popen, match["name"])
-    SERVER_META = {
-        "name": match["name"],
-        "port": match["port"],
-        "folder": str(folder),
-        # Query (GS4) gives the full player list; the status sample is
-        # capped/anonymized. Only used when the server enables it.
-        "query": props.get("enable-query", "").lower() == "true",
-        "query_port": int(props.get("query.port") or match["port"]),
-    }
+    SERVER_META = _server_meta(folder)
     _remember_server(match["name"], script)  # for Start All next time
     _playit_run("start")  # the tunnel comes up with the server
     return killed
+
+
+def _launch_last(match: dict) -> int:
+    """Launch a server with the last-used start script (else its first one)."""
+    script = _load_state().get("last_script")
+    return _launch_server(match, script if script in match["scripts"] else match["scripts"][0])
+
+
+def _server_meta(folder: Path) -> dict:
+    props = read_properties(folder / "server.properties")
+    port = int(props.get("server-port") or 25565)
+    return {"name": folder.name, "port": port, "folder": str(folder),
+            # Query (GS4) gives the full player list; the status sample is
+            # capped/anonymized. Only used when the server enables it.
+            "query": props.get("enable-query", "").lower() == "true",
+            "query_port": int(props.get("query.port") or port)}
 
 
 @app.post("/api/server/start")
@@ -538,7 +533,7 @@ def _server_rcon():
 
 def _send_command(cmd: str):
     """Dispatch a console command to the running server. Returns (ok, output)."""
-    if getattr(SERVER, "adopted", False):  # no pipe; use RCON
+    if SERVER.adopted:  # no pipe; use RCON
         rc = _server_rcon()
         if not rc:
             return False, ("Enable RCON (enable-rcon=true + rcon.password) and restart "
@@ -558,14 +553,10 @@ def api_server_start_last():
     with LOCK:
         if SERVER and SERVER.alive():
             return jsonify({"ok": True, "server": SERVER_META.get("name"), "already_running": True})
-        st = _load_state()
-        match = _server_by_name(st.get("last_server"))
+        match = _server_by_name(_load_state().get("last_server"))
         if not (match and match["scripts"]):
             return jsonify({"error": "No last-used server to start — start one from the dashboard first."}), 409
-        script = st.get("last_script")
-        if script not in match["scripts"]:
-            script = match["scripts"][0]
-        _launch_server(match, script)
+        _launch_last(match)
         name = match["name"]
     _playit_run("start")  # idempotent; make sure the tunnel is up
     return jsonify({"ok": True, "server": name})
@@ -585,7 +576,7 @@ def api_server_command():
 _NAME_RE = re.compile(r"[A-Za-z0-9_]{1,16}")
 PLAYER_ACTIONS = {  # simple "<cmd> <name>" commands
     "kick": "kick", "ban": "ban", "pardon": "pardon", "op": "op", "deop": "deop",
-    "whitelist": "whitelist add", "whitelist_add": "whitelist add",
+    "whitelist_add": "whitelist add",
     "whitelist_remove": "whitelist remove", "kill": "kill",
 }
 PLAYER_EFFECTS = {  # need the player online
@@ -594,17 +585,6 @@ PLAYER_EFFECTS = {  # need the player online
     "starve": "effect give {n} minecraft:hunger 30 100 true",
 }
 GAMEMODES = {"0": "survival", "1": "creative", "2": "adventure", "3": "spectator"}
-
-
-def _rcon_query(cmd: str):
-    """Run a read-only command over RCON and return the response (or None)."""
-    rc = _server_rcon()
-    if not rc:
-        return None
-    try:
-        return rcon_command(*rc, cmd)
-    except (OSError, RconError):
-        return None
 
 
 def _entity_scalar(out):
@@ -682,23 +662,29 @@ class _NBT:
 
 
 def _level_name(folder: Path) -> str:
+    return read_properties(folder / "server.properties").get("level-name") or "world"
+
+
+def _usercache(folder: Path) -> dict:
+    """{name: uuid} of every player the server has seen."""
     try:
-        for line in (folder / "server.properties").read_text(encoding="utf-8").splitlines():
-            if line.startswith("level-name="):
-                return line.split("=", 1)[1].strip() or "world"
-    except OSError:
-        pass
-    return "world"
+        return {e["name"]: e.get("uuid")
+                for e in json.loads((folder / "usercache.json").read_text(encoding="utf-8") or "[]")
+                if e.get("name")}
+    except (OSError, ValueError):
+        return {}
 
 
 def _player_uuid(folder: Path, name: str):
-    try:
-        for e in json.loads((folder / "usercache.json").read_text(encoding="utf-8") or "[]"):
-            if str(e.get("name", "")).lower() == name.lower():
-                return e.get("uuid")
-    except (OSError, ValueError):
-        pass
-    return None
+    return next((u for n, u in _usercache(folder).items() if n.lower() == name.lower()), None)
+
+
+_LISTS = {"opped": "ops.json", "whitelisted": "whitelist.json", "banned": "banned-players.json"}
+
+
+def _list_names(folder: Path) -> dict:
+    """{flag: names} from the server's ops/whitelist/banned-players files."""
+    return {k: _json_names(folder, f) for k, f in _LISTS.items()}
 
 
 def _offline_playerdata(folder: Path, name: str):
@@ -752,7 +738,7 @@ def _online_names() -> set:
     try:
         if SERVER_META.get("query"):
             q = JavaServer("127.0.0.1", SERVER_META.get("query_port", port), timeout=2).query()
-            return set(getattr(q.players, "list", None) or getattr(q.players, "names", []))
+            return set(q.players.list)
         st = JavaServer("127.0.0.1", port, timeout=2).status()
         return {p.name for p in (st.players.sample or [])}
     except Exception:
@@ -764,23 +750,15 @@ def api_players_list():
     folder = _current_server_folder()
     if not folder:
         return jsonify({"players": [], "banned_ips": [], "server_running": False})
-    ops = {x.lower() for x in _json_names(folder, "ops.json")}
-    wl = {x.lower() for x in _json_names(folder, "whitelist.json")}
-    banned = {x.lower() for x in _json_names(folder, "banned-players.json")}
+    lists = _list_names(folder)
+    lowered = {k: {x.lower() for x in v} for k, v in lists.items()}
     online = _online_names()
-    known = {}
-    try:
-        for e in json.loads((folder / "usercache.json").read_text(encoding="utf-8") or "[]"):
-            if e.get("name"):
-                known[e["name"]] = e.get("uuid")
-    except (OSError, ValueError):
-        pass
+    known = _usercache(folder)
     display = {}  # lower -> display name (union of every source)
-    for n in list(known) + list(online) + list(_json_names(folder, "ops.json")) \
-            + list(_json_names(folder, "whitelist.json")) + list(_json_names(folder, "banned-players.json")):
+    for n in [*known, *online, *(n for v in lists.values() for n in v)]:
         display.setdefault(n.lower(), n)
     players = [{"name": disp, "uuid": known.get(disp), "online": disp in online,
-                "opped": low in ops, "banned": low in banned, "whitelisted": low in wl}
+                **{k: low in v for k, v in lowered.items()}}
                for low, disp in sorted(display.items())]
     bips = []
     try:
@@ -798,9 +776,8 @@ def api_player_detail():
         return jsonify({"error": "Invalid player name."}), 400
     folder = _current_server_folder()
     low = name.lower()
-    flags = {"opped": low in {x.lower() for x in _json_names(folder, "ops.json")},
-             "banned": low in {x.lower() for x in _json_names(folder, "banned-players.json")},
-             "whitelisted": low in {x.lower() for x in _json_names(folder, "whitelist.json")}} if folder else {}
+    flags = ({k: low in {x.lower() for x in v} for k, v in _list_names(folder).items()}
+             if folder else {})
     d = {"name": name, "flags": flags, "online": name in _online_names(), "icons": MC_ICONS}
     if d["online"]:
         def num(v):
@@ -808,15 +785,12 @@ def api_player_detail():
                 return float(re.sub(r"[^0-9.\-]", "", v))
             except (TypeError, ValueError):
                 return None
-        d["health"] = num(_entity_scalar(_rcon_query(f"data get entity {name} Health")))
-        d["food"] = num(_entity_scalar(_rcon_query(f"data get entity {name} foodLevel")))
-        d["level"] = num(_entity_scalar(_rcon_query(f"data get entity {name} XpLevel")))
-        d["xp_progress"] = num(_entity_scalar(_rcon_query(f"data get entity {name} XpP")))
-        gm = _entity_scalar(_rcon_query(f"data get entity {name} playerGameType"))
+        tags = ("Health", "foodLevel", "XpLevel", "XpP", "playerGameType", "Dimension", "Pos")
+        res = _rcon_query_multi([f"data get entity {name} {t}" for t in tags]) or [None] * len(tags)
+        health, food, level, xpp, gm, dim, pos = (_entity_scalar(r) for r in res)
+        d["health"], d["food"], d["level"], d["xp_progress"] = map(num, (health, food, level, xpp))
         d["gamemode"] = GAMEMODES.get(re.sub(r"\D", "", gm or ""))
-        dim = _entity_scalar(_rcon_query(f"data get entity {name} Dimension"))
         d["dimension"] = dim.strip('"') if dim else None
-        pos = _entity_scalar(_rcon_query(f"data get entity {name} Pos"))
         if pos:
             nums = re.findall(r"-?\d+\.?\d*", pos)
             if len(nums) >= 3:
@@ -841,13 +815,7 @@ def rcon_session(host, port, password, commands, timeout=8.0):
     response is read. We only accumulate packets whose id matches the command."""
     with socket.create_connection((host, port), timeout=timeout) as sock:
         sock.settimeout(timeout)
-        _rcon_send(sock, 3, password)
-        while True:
-            rid, ptype, _ = _rcon_recv(sock)
-            if ptype == 2:
-                if rid == -1:
-                    raise RconError("authentication failed")
-                break
+        _rcon_auth(sock, password)
         out = []
         for i, command in enumerate(commands):
             cmd_id, end_id = 100 + 2 * i, 101 + 2 * i
@@ -863,11 +831,6 @@ def rcon_session(host, port, password, commands, timeout=8.0):
                     body += chunk
             out.append(body)
         return out
-
-
-def rcon_command_full(host, port, password, command, timeout=8.0):
-    """RCON exec that reassembles multi-packet responses (for large data like Inventory)."""
-    return rcon_session(host, port, password, [command], timeout)[0]
 
 
 def _snbt_top_elements(s):
@@ -1058,11 +1021,6 @@ def api_player_inventory():
     return jsonify({"online": online, "items": items, "ender": ender})
 
 
-def _rcon_query_full(cmd):
-    res = _rcon_query_multi([cmd])
-    return res[0] if res else None
-
-
 def _rcon_query_multi(cmds):
     """Run several read-only commands on one RCON connection; None on failure.
     Retries once, since a fresh connection often succeeds after a transient hiccup."""
@@ -1132,8 +1090,7 @@ def _world_dir():
     folder = SERVER_META.get("folder")
     if not folder:
         return None
-    level = read_properties(Path(folder) / "server.properties").get("level-name") or "world"
-    world = (Path(folder) / level).resolve()
+    world = (Path(folder) / _level_name(Path(folder))).resolve()
     if Path(folder).resolve() not in world.parents:  # no path traversal via level-name
         return None
     return world if world.is_dir() else None
@@ -1338,7 +1295,7 @@ _NOISE = ("RCON Client", "RCON Listener", _BOLT, "spark-worker")  # shown as met
 def _console() -> list:
     """The server console (last 300 lines): from the captured pipe for an owned
     server or logs/latest.log for an adopted one, with RCON/spark noise removed."""
-    if getattr(SERVER, "adopted", False):
+    if SERVER and SERVER.adopted:
         folder = SERVER_META.get("folder")
         raw = _tail(Path(folder) / "logs" / "latest.log", n=600) if folder else []
         if not raw:
@@ -1354,11 +1311,7 @@ SERVER_TPS = {}  # {tps, series, mspt, at}
 
 
 def _has_spark(folder) -> bool:
-    try:
-        return any(p.name.lower().startswith("spark")
-                   for p in (Path(folder) / "mods").glob("*.jar"))
-    except OSError:
-        return False
+    return any(m.lower().startswith("spark") for m in _list_mods(Path(folder)))
 
 
 def _spark_payload(line: str) -> str:
@@ -1414,10 +1367,7 @@ def _tps_worker():
 @app.get("/api/server/status")
 def api_server_status():
     if not (SERVER and SERVER.alive()):
-        state = "offline"
-        if SERVER and SERVER.stopping:
-            state = "offline"
-        return jsonify({"state": state, "log": list(SERVER.log) if SERVER else []})
+        return jsonify({"state": "offline", "log": list(SERVER.log) if SERVER else []})
 
     port = SERVER_META.get("port", 25565)
     host = "127.0.0.1"
@@ -1428,7 +1378,7 @@ def api_server_status():
         "uptime": format_duration(time.time() - SERVER.started_at),
         "metrics": SERVER.metrics(),
         "log": _console(),
-        "adopted": getattr(SERVER, "adopted", False),
+        "adopted": SERVER.adopted,
         "rcon": _server_rcon() is not None,  # config-based; no probe (avoids log spam)
     }
     vm = psutil.virtual_memory()
@@ -1443,12 +1393,8 @@ def api_server_status():
         if SERVER_META.get("query"):  # full roster via GS4 query when enabled
             try:
                 q = JavaServer(host, SERVER_META.get("query_port", port), timeout=2).query()
-                # mcstatus>=11 exposes the roster as .list; older used .names
-                roster = getattr(q.players, "list", None)
-                if roster is None:
-                    roster = getattr(q.players, "names", [])
                 resp["players"] = {"online": q.players.online, "max": q.players.max,
-                                   "names": sorted(roster)}
+                                   "names": sorted(q.players.list)}
                 got_names = True
             except Exception:
                 pass  # query enabled but not answering; fall back to the sample
@@ -1477,17 +1423,7 @@ def _bot_env_path() -> Path:
 
 def _bot_settings() -> dict:
     """Current bot .env values with the token masked."""
-    text = ""
-    try:
-        text = _bot_env_path().read_text()
-    except OSError:
-        pass
-    vals = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, _, v = line.partition("=")
-            vals[k.strip()] = v.strip()
+    vals = read_properties(_bot_env_path())
     token = vals.get("DISCORD_TOKEN", "")
     return {
         "DISCORD_TOKEN_set": bool(token),
@@ -1544,17 +1480,7 @@ def _kill_existing_bots() -> int:
             victims.append(proc)
         except psutil.Error:
             continue
-    for p in victims:
-        try:
-            p.terminate()
-        except psutil.Error:
-            pass
-    _, alive = psutil.wait_procs(victims, timeout=5)
-    for p in alive:
-        try:
-            p.kill()
-        except psutil.Error:
-            pass
+    _kill(victims)
     return len(victims)
 
 
@@ -1672,12 +1598,9 @@ def api_start_all():
             out["server"] = f"{SERVER_META.get('name')} already running"
         else:
             name = _load_state().get("last_server")
-            match = next((s for s in scan_servers(SERVERS_ROOT) if s["name"] == name), None) if name else None
+            match = _server_by_name(name)
             if match and match["scripts"]:
-                script = _load_state().get("last_script")
-                if script not in match["scripts"]:
-                    script = match["scripts"][0]
-                _launch_server(match, script)
+                _launch_last(match)
                 out["server"] = f"started {name}"
             elif name:
                 out["server"] = f"last server '{name}' not found"
@@ -1686,15 +1609,13 @@ def api_start_all():
     return jsonify({"ok": True, "result": out})
 
 
-@app.post("/api/stop-all")
-def api_stop_all():
-    """Stop everything: MC server (gracefully), Discord bot, and playit tunnel."""
+def _stop_async(*fns):
+    """Run the stop steps in the background, each independently of the others' failures."""
     if SERVER and SERVER.alive():
         SERVER.stopping = True  # immediate UI feedback; worker does the real stop
 
     def worker():
-        for fn in (_kill_existing_servers, _kill_existing_bots,
-                   lambda: _playit_run("stop")):
+        for fn in fns:
             try:
                 fn()
             except Exception:
@@ -1702,23 +1623,18 @@ def api_stop_all():
 
     threading.Thread(target=worker, daemon=True).start()
     return jsonify({"ok": True})
+
+
+@app.post("/api/stop-all")
+def api_stop_all():
+    """Stop everything: MC server (gracefully), Discord bot, and playit tunnel."""
+    return _stop_async(_kill_existing_servers, _kill_existing_bots, lambda: _playit_run("stop"))
 
 
 @app.post("/api/stop-server-playit")
 def api_stop_server_playit():
     """Stop the MC server (gracefully) and the playit tunnel; leave the bot running."""
-    if SERVER and SERVER.alive():
-        SERVER.stopping = True
-
-    def worker():
-        for fn in (_kill_existing_servers, lambda: _playit_run("stop")):
-            try:
-                fn()
-            except Exception:
-                pass
-
-    threading.Thread(target=worker, daemon=True).start()
-    return jsonify({"ok": True})
+    return _stop_async(_kill_existing_servers, lambda: _playit_run("stop"))
 
 
 def _ensure_playit():
@@ -1740,12 +1656,7 @@ _last_autorestart = 0.0
 def _discord_notify(text: str, level: str = "warn"):
     """Post an alert to the bot's channel as the bot (REST API, bot token)."""
     try:
-        env = {}
-        for line in _bot_env_path().read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, _, v = line.partition("=")
-                env[k.strip()] = v.strip()
+        env = read_properties(_bot_env_path())
         token, ch = env.get("DISCORD_TOKEN"), env.get("CHANNEL_ID")
         if not (token and ch):
             return
@@ -1784,14 +1695,13 @@ def _maybe_sample(resp: dict):
 def _restart_with_countdown():
     name = SERVER_META.get("name")
     match = _server_by_name(name)
-    script = _load_state().get("last_script")
     for secs, wait in ((60, 30), (30, 20), (10, 10)):
         _send_command(f"say Scheduled restart in {secs} seconds")
         time.sleep(wait)
     if SERVER:
         _graceful_stop(SERVER)
     if match and match["scripts"]:
-        _launch_server(match, script if script in match["scripts"] else match["scripts"][0])
+        _launch_last(match)
         _alert(f"Scheduled restart of '{name}'", "info")
 
 
@@ -1810,10 +1720,9 @@ def _supervisor():
                 if time.time() - _last_autorestart < 30:
                     _alert(f"'{name}' died again too soon — not auto-restarting", "error")
                 elif match and match["scripts"]:
-                    script = _load_state().get("last_script")
                     _last_autorestart = time.time()
                     _alert(f"'{name}' crashed — auto-restarting", "error")
-                    _launch_server(match, script if script in match["scripts"] else match["scripts"][0])
+                    _launch_last(match)
             if RESTART_TIME and SERVER and SERVER.alive():
                 key = time.strftime("%Y-%m-%d %H:%M")
                 if time.strftime("%H:%M") == RESTART_TIME and _restart_fired != key:
@@ -1932,12 +1841,8 @@ def _adopt_running():
                          key=lambda f: max(p.info["create_time"] for p in by_folder[f]))
             procs = by_folder[folder]
             anchor = next((p for p in procs if (p.info["name"] or "").lower() == "cmd.exe"), procs[0])
-            props = read_properties(folder / "server.properties")
-            port = int(props.get("server-port") or 25565)
             SERVER = AdoptedProc(anchor.pid, folder.name)
-            SERVER_META = {"name": folder.name, "port": port, "folder": str(folder),
-                           "query": props.get("enable-query", "").lower() == "true",
-                           "query_port": int(props.get("query.port") or port)}
+            SERVER_META = _server_meta(folder)
     if not (BOT and BOT.alive()):
         best = None
         for pr in psutil.process_iter(["name", "cmdline"]):
