@@ -1605,7 +1605,7 @@ def api_start_all():
             elif name:
                 out["server"] = f"last server '{name}' not found"
             else:
-                out["server"] = "no server — pick one on the MC Server tab"
+                out["server"] = "no server — pick one on the Server tab"
     return jsonify({"ok": True, "result": out})
 
 

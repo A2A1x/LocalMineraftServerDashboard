@@ -71,14 +71,17 @@ copy config.example.json config.json
 
 ## Tabs
 
-**Overview** (status tiles, history graphs, alerts, console) · **MC Server** (start/stop,
-console, commands, quick actions, backups) · **Players** (roster with online/op/ban/whitelist
-filters → per-player detail: vitals, inventory + ender chest with Minecraft-style hover tooltips
+**Overview** (server hero with TPS/CPU/RAM/player gauges, one-click bot/tunnel toggles, history
+graphs, alerts, console) · **Server** (start/stop, console, commands, quick actions, backups) ·
+**Players** (searchable roster with online/op/ban/whitelist filters → per-player detail: vitals, inventory + ender chest with Minecraft-style hover tooltips
 (item name + enchantments), kill/heal/feed/starve, gamemode, op/ban/whitelist/kick, teleport —
 live over RCON for online players, or read from the saved `playerdata/*.dat` for offline ones,
 with the live-entity actions greyed out) ·
-**Discord Bot** (start/stop + `.env` settings) · **Playit** (tunnel control + log) ·
+**Discord Bot** (start/stop + `.env` settings) · **Tunnel** (playit control + log) ·
 **Config** (pick the servers folder; per-server `server.properties`, memory, mods).
+
+Keys: <kbd>1</kbd>–<kbd>6</kbd> switch tabs, <kbd>/</kbd> jumps to the console command box. The
+last-open tab is remembered.
 
 ## Notes
 

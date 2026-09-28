@@ -5,85 +5,322 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Minecraft Server Dashboard</title>
 <style>
-  :root { color-scheme: dark; }
+  :root {
+    color-scheme: dark;
+    --bg: #0a0c10; --side: #0d1015; --panel: #12151b; --panel2: #171b23; --inset: #0b0d12;
+    --line: rgba(255,255,255,.07); --line2: rgba(255,255,255,.12);
+    --text: #e9ecf1; --muted: #8b94a4; --dim: #5d6574;
+    --ok: #3ddc84; --mid: #f5b945; --bad: #ff5f5f; --blue: #6ea8ff; --violet: #b18cff;
+    --r: 14px;
+    --mono: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+  }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: #12151c; color: #e6e9ef; }
-  header { padding: 14px 24px 0; background: #0d1017; border-bottom: 1px solid #262c39; position: sticky; top: 0; z-index: 10; }
-  header h1 { margin: 0 0 10px; font-size: 18px; }
-  nav.tabs { display: flex; gap: 4px; }
-  nav.tabs button { background: transparent; color: #93a0b5; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 9px 16px; cursor: pointer; font: inherit; font-weight: 600; }
-  nav.tabs button:hover { color: #e6e9ef; }
-  nav.tabs button.active { color: #e6e9ef; border-bottom-color: #3182ce; }
-  .header-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; padding-bottom: 8px; }
-  #start-all, #stop-mc, #stop-all { border: 0; border-radius: 6px; padding: 6px 14px; font-weight: 600; cursor: pointer; color: #fff; }
-  #start-all { background: #2f855a; } #start-all:hover { background: #38a169; }
-  #stop-mc { background: #b0742f; } #stop-mc:hover { background: #c98a3f; }
-  #stop-all { background: #b03b3b; } #stop-all:hover { background: #d14545; }
-  main { padding: 16px 24px; }
+  [hidden] { display: none !important; }
+  body { margin: 0; font: 13.5px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+         background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
+  body::before { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: -1;
+    background: radial-gradient(900px 520px at 20% -12%, rgba(61,220,132,.07), transparent 60%),
+                radial-gradient(700px 420px at 105% 0%, rgba(110,168,255,.06), transparent 60%); }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.08); border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
+  ::-webkit-scrollbar-thumb:hover { background-color: rgba(255,255,255,.16); }
+  ::selection { background: rgba(110,168,255,.35); }
+  :focus-visible { outline: 2px solid rgba(110,168,255,.7); outline-offset: 2px; }
+  .i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* layout */
+  .app { display: grid; grid-template-columns: 216px 1fr; min-height: 100vh; }
+  .side { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; gap: 20px;
+          padding: 18px 12px; background: var(--side); border-right: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 2px 8px; }
+  .brand svg { width: 30px; height: 30px; filter: drop-shadow(0 4px 14px rgba(61,220,132,.28)); }
+  .brand b { display: block; font-size: 14px; }
+  .brand small { display: block; color: var(--dim); font-size: 11px; margin-top: -2px; }
+  .nav { display: flex; flex-direction: column; gap: 2px; }
+  .nav button { position: relative; display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px;
+                border: 0; border-radius: 9px; background: none; color: var(--muted); font: inherit; font-weight: 500;
+                cursor: pointer; text-align: left; transition: background .15s, color .15s; }
+  .nav button:hover { background: rgba(255,255,255,.04); color: var(--text); }
+  .nav button.active { background: rgba(255,255,255,.07); color: #fff; }
+  .nav button.active::before { content: ""; position: absolute; left: -12px; top: 8px; bottom: 8px; width: 3px;
+                               border-radius: 0 3px 3px 0; background: var(--ok); }
+  .nav button > span { flex: 1; }
+  .nav .i { width: 17px; height: 17px; }
+  .nav .count:empty { display: none; }
+  .count { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: rgba(61,220,132,.15); color: var(--ok);
+           font-size: 11px; font-weight: 700; display: inline-grid; place-items: center; font-style: normal; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: #2c323d; flex: none; transition: background .3s; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 0 3px rgba(61,220,132,.14); }
+  .dot.mid { background: var(--mid); box-shadow: 0 0 0 3px rgba(245,185,69,.14); }
+  .side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 12px; }
+  #side-join { padding: 10px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255,255,255,.02);
+               display: flex; flex-direction: column; gap: 6px; }
+  #side-join:empty { display: none; }
+  .lbl { color: var(--dim); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
+  .hint { color: var(--dim); font-size: 11px; padding: 0 8px; line-height: 1.9; }
+  kbd { font: 10.5px var(--mono); padding: 1px 5px; border: 1px solid var(--line2); border-bottom-width: 2px; border-radius: 4px; color: var(--muted); }
+
+  .main { min-width: 0; }
+  .top { position: sticky; top: 0; z-index: 20; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; padding: 14px 28px;
+         background: rgba(10,12,16,.75); backdrop-filter: blur(14px); border-bottom: 1px solid var(--line); }
+  .top h1 { margin: 0; font-size: 19px; font-weight: 650; letter-spacing: -.01em; }
+  #page-sub { color: var(--muted); font-size: 12.5px; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 7px; min-height: 22px; white-space: nowrap; }
+  .power { margin-left: auto; display: flex; flex-wrap: wrap; gap: 8px; }
+  main { padding: 22px 28px 40px; }
+  .tab { display: flex; flex-direction: column; gap: 16px; animation: fade .25s ease; }
   .tab[hidden] { display: none; }
-  .card { background: #171b24; border: 1px solid #262c39; border-radius: 10px; padding: 16px; }
-  .card h2 { margin: 0 0 12px; font-size: 15px; }
-  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
-  .offline { background: #3a2226; color: #ff8a8a; }
-  .starting, .stopping { background: #3a3422; color: #ffd479; }
-  .online { background: #223a2a; color: #7ee2a0; }
-  button.act { background: #2b6cb0; color: #fff; border: 0; border-radius: 6px; padding: 7px 12px; cursor: pointer; font: inherit; }
-  button.act:hover { background: #3182ce; }
-  button.danger { background: #b03b3b; } button.danger:hover { background: #d14545; }
-  button.act:disabled { opacity: .4; cursor: not-allowed; }
-  select, input { background: #0f131a; color: #e6e9ef; border: 1px solid #2b3342; border-radius: 6px; padding: 6px 8px; font: inherit; }
-  .server-row { display: flex; gap: 8px; align-items: center; padding: 8px 0; }
-  .server-row + .server-row { border-top: 1px solid #212834; }
-  .server-row .name { flex: 1; font-weight: 600; }
-  table.kv { width: 100%; border-collapse: collapse; }
-  table.kv td { padding: 3px 0; vertical-align: top; }
-  table.kv td.k { color: #93a0b5; width: 110px; }
-  pre.log { background: #0b0e14; border: 1px solid #212834; border-radius: 6px; padding: 10px; height: 48vh; min-height: 220px; overflow: auto; margin: 10px 0 0; white-space: pre-wrap; font: 12px/1.45 ui-monospace, monospace; }
-  pre.log .error { color: #ff8a8a; }
-  pre.log .warn  { color: #ffd479; }
-  pre.log .debug { color: #7f8a9c; }
-  pre.log .info  { color: #cfd6e2; }
-  .row { display: flex; gap: 8px; margin-top: 8px; }
-  .row > input { flex: 1; }
-  form.settings { display: grid; grid-template-columns: 120px 1fr; gap: 8px 10px; align-items: center; }
-  form.settings label { color: #93a0b5; }
-  .muted { color: #93a0b5; font-size: 12px; }
-  .padmin-title { color: #93a0b5; font-size: 12px; margin-bottom: 4px; }
-  .padmin-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
-  .padmin-row .pname { flex: 1; font-weight: 600; }
-  .pbtn { background: #243044; color: #cfd6e2; border: 0; border-radius: 4px; padding: 3px 9px; font: inherit; font-size: 12px; cursor: pointer; }
-  .pbtn:hover { background: #2e3d56; }
-  .pbtn.danger { background: #5a2a2a; } .pbtn.danger:hover { background: #7a3636; }
-  .act:disabled, .pbtn:disabled { opacity: .4; cursor: not-allowed; }
-  #alerts div { padding: 2px 0; } .a-warn { color: #ffd479; } .a-err { color: #ff8a8a; }
-  .pcard { cursor: pointer; } .pcard:hover { border-color: #3182ce; }
-  .vitals { margin: 6px 0 12px; }
-  .vrow { display: flex; align-items: center; gap: 10px; padding: 3px 0; }
-  .vlabel { color: #93a0b5; min-width: 96px; }
+  @keyframes fade { from { opacity: 0; transform: translateY(4px); } }
+  .grid { display: grid; gap: 16px; }
+  .col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .g-ov { grid-template-columns: 2fr 1fr; }
+  .g-split { grid-template-columns: 1fr 2fr; }
+  .g-side { grid-template-columns: 340px minmax(0, 1fr); align-items: start; }
+  .g-cfg { grid-template-columns: 3fr 2fr; align-items: start; }
+  @media (max-width: 1100px) { .g-ov, .g-split, .g-side, .g-cfg { grid-template-columns: minmax(0, 1fr); } .g-side .plist { position: static; max-height: 460px; } }
+  @media (max-width: 820px) {  /* icon-only sidebar */
+    .app { grid-template-columns: 60px 1fr; } .side { padding: 18px 8px; }
+    .brand div, .nav button > span, .side-foot { display: none; } .brand, .nav button { justify-content: center; padding-left: 0; padding-right: 0; }
+    .nav .dot, .nav .count { position: absolute; top: 5px; right: 8px; } .nav .count { transform: scale(.8); }
+    .top, main { padding-left: 16px; padding-right: 16px; }
+  }
+
+  /* building blocks */
+  .card { background: linear-gradient(180deg, rgba(255,255,255,.022), rgba(255,255,255,.008)), var(--panel);
+          border: 1px solid var(--line); border-radius: var(--r); padding: 16px 18px; min-width: 0;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,.03), 0 10px 30px -18px rgba(0,0,0,.7); }
+  .card-h { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; min-height: 28px; }
+  .card-h h2, .term-bar h2 { margin: 0; font-size: 13px; font-weight: 600; }
+  .end { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .muted { color: var(--muted); font-size: 12.5px; }
+  .note { display: flex; gap: 8px; align-items: flex-start; padding: 9px 12px; border-radius: 10px; font-size: 12.5px;
+          background: rgba(245,185,69,.07); border: 1px solid rgba(245,185,69,.18); color: #e9cf95; }
+  .note:empty { display: none; }
+  .note .i { margin-top: 2px; width: 14px; height: 14px; }
+  .empty { display: grid; place-items: center; text-align: center; gap: 10px; color: var(--dim); padding: 56px 20px; }
+  .empty .i { width: 32px; height: 32px; opacity: .55; }
+  .empty.sm { display: block; padding: 16px 8px; font-size: 12.5px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 32px; padding: 0 13px;
+         border: 1px solid var(--line2); border-radius: 9px; background: rgba(255,255,255,.04); color: var(--text);
+         font: inherit; font-weight: 550; cursor: pointer; white-space: nowrap; position: relative;
+         transition: background .15s, border-color .15s, opacity .15s, transform .05s; }
+  .btn:hover { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.18); }
+  .btn:active { transform: translateY(1px); }
+  .btn:disabled { opacity: .35; cursor: not-allowed; transform: none; }
+  .btn.go { background: var(--ok); border-color: transparent; color: #05220e; }
+  .btn.go:hover { background: #5ee79c; }
+  .btn.bad { background: rgba(255,95,95,.1); border-color: rgba(255,95,95,.28); color: #ff8a8a; }
+  .btn.bad:hover { background: rgba(255,95,95,.18); }
+  .btn.warn { background: rgba(245,185,69,.09); border-color: rgba(245,185,69,.26); color: #ffcf73; }
+  .btn.warn:hover { background: rgba(245,185,69,.17); }
+  .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+  .btn.ghost:hover { background: rgba(255,255,255,.06); color: var(--text); }
+  .btn.sm { height: 28px; padding: 0 10px; font-size: 12.5px; border-radius: 8px; }
+  .btn.xs { height: 24px; padding: 0 8px; font-size: 12px; border-radius: 7px; }
+  .btn.icon { width: 32px; padding: 0; } .btn.sm.icon { width: 28px; }
+  .btn.busy { color: transparent !important; pointer-events: none; }
+  .btn.busy:disabled { opacity: .85; }
+  .btn.busy::after, .spin { content: ""; position: absolute; width: 14px; height: 14px; border-radius: 50%;
+                            border: 2px solid rgba(255,255,255,.3); border-top-color: #fff; animation: spin .7s linear infinite; }
+  .spin { position: static; display: inline-block; vertical-align: -2px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  input, select { height: 32px; padding: 0 10px; background: var(--inset); color: var(--text); border: 1px solid var(--line2);
+                  border-radius: 8px; font: inherit; outline: none; min-width: 0; transition: border-color .15s, box-shadow .15s; }
+  input:focus, select:focus { border-color: rgba(110,168,255,.6); box-shadow: 0 0 0 3px rgba(110,168,255,.14); }
+  input::placeholder { color: var(--dim); }
+  input:disabled, select:disabled { opacity: .5; cursor: not-allowed; }
+  select { appearance: none; padding-right: 28px; cursor: pointer;
+           background: var(--inset) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%238b94a4' stroke-width='1.6' stroke-linecap='round'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E") no-repeat right 10px center; }
+  input.switch { appearance: none; width: 34px; height: 20px; padding: 0; border: 0; border-radius: 999px; position: relative;
+                 background: rgba(255,255,255,.1); cursor: pointer; flex: none; transition: background .2s; }
+  input.switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%;
+                        background: #c9cfd9; transition: transform .2s, background .2s; }
+  input.switch:checked { background: var(--ok); }
+  input.switch:checked::after { transform: translateX(14px); background: #fff; }
+  .search { position: relative; display: flex; align-items: center; }
+  .search .i { position: absolute; left: 10px; width: 14px; height: 14px; color: var(--dim); pointer-events: none; }
+  .search input { padding-left: 30px; width: 100%; }
+  .toggle { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12.5px; cursor: pointer; }
+
+  .pill { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px; border-radius: 999px;
+          font-size: 11.5px; font-weight: 600; text-transform: capitalize; white-space: nowrap;
+          background: rgba(255,255,255,.06); color: var(--muted); }
+  .pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .pill.ok { background: rgba(61,220,132,.12); color: var(--ok); }
+  .pill.ok::before { animation: pulse 2s infinite; }
+  .pill.mid { background: rgba(245,185,69,.12); color: var(--mid); }
+  .pill.bad { background: rgba(255,95,95,.12); color: #ff8080; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 currentColor; } 70%, 100% { box-shadow: 0 0 0 5px transparent; } }
+  .tags { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+  .tag { font-size: 10px; font-weight: 700; font-style: normal; text-transform: uppercase; letter-spacing: .05em;
+         padding: 1px 6px; border-radius: 5px; background: rgba(255,255,255,.06); color: var(--muted); }
+  .tag.op { color: var(--mid); background: rgba(245,185,69,.1); }
+  .tag.wl { color: var(--blue); background: rgba(110,168,255,.1); }
+  .tag.ban { color: #ff8080; background: rgba(255,95,95,.1); }
+  .chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px; max-width: 100%;
+          border: 1px solid var(--line2); border-radius: 7px; background: rgba(255,255,255,.03); color: var(--text);
+          font: 12px var(--mono); cursor: pointer; transition: background .15s, border-color .15s; }
+  .chip:hover { background: rgba(255,255,255,.07); border-color: rgba(255,255,255,.2); }
+  .chip .i { width: 13px; height: 13px; color: var(--muted); }
+  .chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .av { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; flex: none; position: relative;
+        font-weight: 700; font-size: 13px; color: #fff; text-shadow: 0 1px 1px rgba(0,0,0,.35);
+        background: linear-gradient(135deg, hsl(var(--h) 58% 50%), hsl(calc(var(--h) + 40) 55% 30%)); }
+  .av.sm { width: 24px; height: 24px; border-radius: 7px; font-size: 11px; }
+  .av.lg { width: 56px; height: 56px; border-radius: 15px; font-size: 24px; }
+  .av.on::after { content: ""; position: absolute; right: -3px; bottom: -3px; width: 10px; height: 10px; border-radius: 50%;
+                  background: var(--ok); border: 2px solid var(--panel); }
+
+  /* overview */
+  .hero { display: flex; gap: 28px; align-items: center; flex-wrap: wrap; padding: 22px 24px; position: relative; overflow: hidden; }
+  .hero::after { content: ""; position: absolute; right: -90px; top: -110px; width: 300px; height: 300px; border-radius: 50%;
+                 background: radial-gradient(circle, rgba(61,220,132,.13), transparent 70%); pointer-events: none; }
+  .hero.off::after { display: none; }
+  .hero-l { flex: 1 1 200px; min-width: 0; display: flex; flex-direction: column; gap: 9px; align-items: flex-start; }
+  .hero-name { font-size: 30px; font-weight: 700; letter-spacing: -.02em; line-height: 1.1; }
+  .hero-name.dim { color: var(--muted); }
+  .hero-meta { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: 12.5px; }
+  .motd { color: var(--muted); font-size: 12.5px; font-style: italic; }
+  .faces { display: flex; align-items: center; padding-left: 6px; }
+  .faces .av { margin-left: -6px; box-shadow: 0 0 0 2px var(--panel); }
+  .faces em { margin-left: 8px; color: var(--muted); font-size: 12px; font-style: normal; }
+  .gauges { display: flex; gap: 14px; flex-wrap: wrap; position: relative; z-index: 1; }
+  .gauge { display: flex; flex-direction: column; align-items: center; gap: 5px; min-width: 84px; }
+  .ring { position: relative; width: 84px; height: 84px; display: grid; place-items: center; }
+  .ring::before { content: ""; position: absolute; inset: 0; border-radius: 50%;
+    background: conic-gradient(var(--c) calc(var(--p) * 1%), rgba(255,255,255,.07) 0);
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 7px), #000 calc(100% - 6px));
+            mask: radial-gradient(farthest-side, transparent calc(100% - 7px), #000 calc(100% - 6px)); }
+  .ring b { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .gauge > span { font-size: 10.5px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+  .gauge small { font-size: 11px; color: var(--dim); margin-top: -4px; min-height: 16px; }
+  .svc { display: flex; align-items: center; gap: 12px; padding: 12px 0; }
+  .svc + .svc { border-top: 1px solid var(--line); }
+  .svc:first-child { padding-top: 0; }
+  .svc-ic { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 11px; flex: none;
+            background: rgba(255,255,255,.05); color: var(--muted); }
+  .svc-ic.on { background: rgba(61,220,132,.12); color: var(--ok); }
+  .svc-ic .i { width: 18px; height: 18px; }
+  .svc-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  .svc-t small { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .chart { background: var(--inset); border: 1px solid var(--line); border-radius: 11px; padding: 12px 14px 10px; }
+  .chart-h { display: flex; justify-content: space-between; align-items: baseline; }
+  .chart-h b { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .chart-h b small { font-size: 11px; color: var(--muted); font-weight: 500; margin-left: 3px; }
+  .spark { display: block; width: 100%; height: 56px; margin: 6px 0 4px; }
+  .chart-f { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .alerts { display: flex; flex-direction: column; max-height: 360px; overflow: auto; }
+  .alert { display: flex; gap: 10px; padding: 8px 0; font-size: 12.5px; }
+  .alert + .alert { border-top: 1px dashed var(--line); }
+  .alert > i { width: 7px; height: 7px; margin-top: 6px; border-radius: 50%; flex: none; background: var(--mid); box-shadow: 0 0 8px var(--mid); }
+  .alert.bad > i { background: var(--bad); box-shadow: 0 0 8px var(--bad); }
+  .alert small { color: var(--dim); font-size: 11px; }
+
+  /* console */
+  .term { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+  .term-bar { display: flex; align-items: center; gap: 10px; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--line); min-height: 50px; }
+  .term-bar > .i { color: var(--muted); }
+  .term-bar .search input { height: 28px; width: 180px; font-size: 12.5px; }
+  .live { width: 7px; height: 7px; border-radius: 50%; background: #2c323d; }
+  .live.ok { background: var(--ok); animation: blink 1.6s ease-in-out infinite; }
+  @keyframes blink { 50% { opacity: .35; } }
+  pre.log { margin: 0; padding: 12px 16px; height: 46vh; min-height: 220px; overflow: auto; background: var(--inset);
+            white-space: pre-wrap; word-break: break-word; font: 12px/1.6 var(--mono); color: #c9d1dd; }
+  pre.log.short { height: 34vh; }
+  pre.log .ts { color: var(--dim); }
+  pre.log .error { color: #ff8585; } pre.log .warn { color: #ffd27a; } pre.log .debug { color: #6b7485; }
+  .term-in { display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 16px; border-top: 1px solid var(--line); background: var(--inset); }
+  .term-in b { color: var(--ok); font: 700 15px var(--mono); }
+  .term-in input { flex: 1; height: 30px; border: 0; background: transparent; padding: 0; font: 12.5px var(--mono); box-shadow: none !important; }
+
+  /* server tab */
+  .srv-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 11px;
+             background: var(--inset); transition: border-color .15s; }
+  .srv-row + .srv-row { margin-top: 8px; }
+  .srv-row:hover { border-color: var(--line2); }
+  .srv-row.running { border-color: rgba(61,220,132,.35); background: linear-gradient(90deg, rgba(61,220,132,.09), transparent 70%), var(--inset); }
+  .srv-row > svg { width: 22px; height: 22px; flex: none; }
+  .srv-t { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .srv-t b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .srv-t small { color: var(--dim); font-size: 11.5px; }
+  .srv-row select { max-width: 120px; height: 28px; font-size: 12px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .stat { background: var(--inset); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; min-width: 0;
+          display: flex; flex-direction: column; gap: 2px; }
+  .stat > span { color: var(--dim); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; }
+  .stat b { font-weight: 600; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stat b small { color: var(--muted); font-weight: 400; }
+  .sub-h { display: flex; align-items: center; gap: 8px; margin: 18px 0 8px; }
+  .prow { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 9px; }
+  .prow:hover { background: rgba(255,255,255,.03); }
+  .prow .pname { flex: 1; font-weight: 550; }
+  .qa-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .qa-grid .btn { justify-content: flex-start; height: 38px; }
+  .qa-grid .btn .i { color: var(--muted); }
+  .qa-grid .btn.bad .i { color: inherit; }
+  .qa-grid .wide { grid-column: 1 / -1; }
+  .blist { display: flex; flex-direction: column; gap: 2px; max-height: 230px; overflow: auto; margin-top: 8px; }
+  .brow { display: flex; align-items: center; gap: 9px; padding: 6px 8px; border-radius: 7px; }
+  .brow:hover { background: rgba(255,255,255,.03); }
+  .brow .i { color: var(--dim); width: 14px; height: 14px; }
+  .brow span { flex: 1; min-width: 0; font: 11.5px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .brow small { color: var(--dim); font-size: 11.5px; }
+
+  /* players */
+  .plist { position: sticky; top: 86px; display: flex; flex-direction: column; gap: 10px; max-height: calc(100vh - 112px); }
+  .plist .card-h { margin-bottom: 0; }
+  .seg { display: flex; gap: 2px; padding: 3px; background: var(--inset); border: 1px solid var(--line); border-radius: 10px; }
+  .seg button { flex: 1; height: 26px; border: 0; border-radius: 7px; background: none; color: var(--muted);
+                font: inherit; font-size: 12px; font-weight: 550; cursor: pointer; transition: background .15s, color .15s; }
+  .seg button:hover { color: var(--text); }
+  .seg button.active-f { background: rgba(255,255,255,.09); color: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.3); }
+  .prows { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 2px; margin: 0 -8px; padding: 0 8px; }
+  .pcard { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 8px; border: 0; border-radius: 9px;
+           background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+  .pcard:hover { background: rgba(255,255,255,.04); }
+  .pcard.sel { background: rgba(110,168,255,.1); box-shadow: inset 0 0 0 1px rgba(110,168,255,.28); }
+  .pcard .pn { flex: 1; min-width: 0; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pd-h { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding-bottom: 16px; margin-bottom: 16px; border-bottom: 1px solid var(--line); }
+  .pd-h h2 { margin: 0 0 4px; font-size: 22px; font-weight: 700; letter-spacing: -.01em; }
+  .mcpanel { background: var(--inset); border: 1px solid var(--line); border-radius: 12px; padding: 14px; width: max-content; max-width: 100%; }
+  .he-inv { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+  .pd-inv-col { display: flex; flex-direction: column; gap: 8px; }
+  .pd-inv-col .lbl:not(:first-child) { margin-top: 8px; }
+  .xp-level { text-align: center; font-weight: 700; color: #b5f07a; text-shadow: 0 0 12px rgba(150,240,90,.35); margin-bottom: 5px; }
+  .xp-track { height: 8px; background: rgba(255,255,255,.07); border-radius: 5px; overflow: hidden; margin-bottom: 14px; }
+  .xp-prog { height: 100%; background: linear-gradient(90deg, #6fd84a, #c6f36c); border-radius: 5px; }
+  .he-row { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+  .he-icons { flex: 1; display: flex; justify-content: center; }
+  .he-btn { height: 34px; min-width: 104px; padding: 0 12px; border: 1px solid; border-radius: 9px; font: inherit; font-weight: 600; cursor: pointer; transition: background .15s; }
+  .he-btn.kill { background: rgba(255,120,90,.09); border-color: rgba(255,120,90,.28); color: #ff9c82; }
+  .he-btn.kill:hover { background: rgba(255,120,90,.17); }
+  .he-btn.heal { background: rgba(61,220,132,.09); border-color: rgba(61,220,132,.28); color: #6be9a5; }
+  .he-btn.heal:hover { background: rgba(61,220,132,.17); }
+  .he-btn:disabled { opacity: .35; cursor: not-allowed; }
+  .vitals { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .vrow { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+  .vrow .lbl { min-width: 84px; }
+  .vrow input { width: 72px; height: 30px; }
+  .vrow select { height: 30px; }
   .pips { display: inline-flex; }
   .pip { display: inline-block; width: 22px; height: 22px; image-rendering: pixelated;
          background-repeat: no-repeat; background-position: center; background-size: contain; }
-  .he-inv { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; margin: 6px 0 14px; }
-  .he { flex: 0 0 auto; width: max-content; }
-  .xp-level { text-align: center; font-weight: 700; margin-bottom: 5px; }
-  .xp-track { height: 14px; background: #3a4150; border-radius: 6px; overflow: hidden; margin-bottom: 12px; }
-  .xp-prog { height: 100%; background: #5bd97e; }
-  .he-row { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; }
-  .he-icons { flex: 1; display: flex; justify-content: center; }
-  .he-btn { border: 0; border-radius: 6px; padding: 10px 16px; min-width: 132px; font: inherit; font-weight: 600; color: #fff; cursor: pointer; }
-  .he-btn.kill { background: #e07a5a; } .he-btn.kill:hover { background: #e88d70; }
-  .he-btn.heal { background: #2ec48f; } .he-btn.heal:hover { background: #42d29f; }
-  .he-btn:disabled { opacity: .4; cursor: not-allowed; }
   .inv { display: flex; gap: 16px; align-items: stretch; }
   .inv-col { display: flex; flex-direction: column; gap: 3px; }
   .inv-off { justify-content: flex-end; }   /* offhand sits at the bottom, level with boots */
   .inv-main { display: flex; flex-direction: column; gap: 3px; }
   .inv-row { display: flex; gap: 3px; }
   .inv-gap { height: 11px; }
-  .slot { position: relative; width: 42px; height: 42px; background: #0b0e14; border: 1px solid #2b3342; border-radius: 3px; display: flex; align-items: center; justify-content: center; }
+  .slot { position: relative; width: 42px; height: 42px; background: #07090c; border: 1px solid rgba(255,255,255,.07); border-radius: 5px;
+          display: flex; align-items: center; justify-content: center; transition: border-color .12s, background .12s; }
+  .slot[data-name]:hover { border-color: rgba(255,255,255,.28); background: #121620; }
   .slot img { width: 36px; height: 36px; image-rendering: pixelated; }
-  .slot .cnt { position: absolute; right: 2px; bottom: 0; font: 11px/1 ui-monospace, monospace; color: #fff; text-shadow: 1px 1px #000; z-index: 2; }
-  .slot .noimg { font-size: 7px; line-height: 1.1; color: #93a0b5; text-align: center; padding: 1px; word-break: break-word; }
+  .slot .cnt { position: absolute; right: 2px; bottom: 0; font: 11px/1 var(--mono); color: #fff; text-shadow: 1px 1px #000; z-index: 2; }
+  .slot .noimg { font-size: 7px; line-height: 1.1; color: var(--muted); text-align: center; padding: 1px; word-break: break-word; }
   .slot .glint { position: absolute; width: 36px; height: 36px; pointer-events: none; mix-blend-mode: screen;
                  -webkit-mask-size: contain; mask-size: contain; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
                  -webkit-mask-position: center; mask-position: center;
@@ -91,7 +328,6 @@
                              rgba(170,90,255,.55) 53%, transparent 62%);
                  background-size: 300% 300%; animation: glint 2.8s linear infinite; }
   @keyframes glint { 0% { background-position: 100% 0; } 100% { background-position: 0 100%; } }
-  @media (prefers-reduced-motion: reduce) { .slot .glint { animation: none; background-position: 50% 50%; } }
   #mctip { position: fixed; z-index: 2000; pointer-events: none; display: none; max-width: 340px;
            background: rgba(16, 0, 16, .95); border: 2px solid #2b0a52;
            box-shadow: inset 0 0 0 1px #52259a, 0 3px 10px #000a; border-radius: 2px;
@@ -100,168 +336,308 @@
   #mctip .mctt-name .mctt-x { color: #8a93a3; font-weight: 400; }
   #mctip .mctt-ench { color: #adadad; }
   #mctip .mctt-id { color: #5a6270; font-size: 11px; margin-top: 3px; }
-  .xp-bg { display: inline-block; width: 182px; height: 8px; background: url(/static/mc/xp_bg.png) left/100% 100% no-repeat; image-rendering: pixelated; }
-  .xp-fg { display: block; height: 100%; background: url(/static/mc/xp_fg.png) left/182px 100% no-repeat; image-rendering: pixelated; }
-  .xp-cssbar { display: inline-block; width: 182px; height: 8px; background: #1a3a24; border-radius: 3px; overflow: hidden; }
-  .xp-cssfill { display: block; height: 100%; background: #7ee2a0; }
-  .badge.tag { background: #2b3342; color: #cfd6e2; }
-  .pf.active-f { outline: 2px solid #3182ce; }
-  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
-  .tile { background: #171b24; border: 1px solid #262c39; border-radius: 10px; padding: 14px 16px; }
-  .tile-k { color: #93a0b5; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 6px; }
-  .tile .big { font-size: 22px; font-weight: 700; }
+
+  /* forms / config */
+  .fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+  .fields + .fields { margin-top: 12px; }
+  .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  .field > span { color: var(--muted); font-size: 12px; font-weight: 500; }
+  .field.sw { flex-direction: row; align-items: center; justify-content: space-between; gap: 10px; height: 38px; padding: 0 12px;
+              border: 1px solid var(--line); border-radius: 9px; background: var(--inset); cursor: pointer; }
+  .field.sw > span { color: var(--text); font-size: 12.5px; }
+  .kv > div { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .kv > div > span { color: var(--muted); }
+  .addr-big { display: flex; align-items: center; gap: 10px; padding: 12px 14px; margin-bottom: 14px; border: 1px dashed var(--line2);
+              border-radius: 11px; background: var(--inset); }
+  .addr-big div { flex: 1; min-width: 0; }
+  .addr-big b { display: block; font: 600 15px var(--mono); overflow: hidden; text-overflow: ellipsis; }
+  .mods { max-height: 380px; overflow: auto; margin-top: 10px; }
+  .mods div { padding: 5px 8px; border-radius: 6px; font: 12px var(--mono); color: #c9d1dd; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mods div:nth-child(odd) { background: rgba(255,255,255,.022); }
+
+  /* toasts + dialog */
+  #toasts { position: fixed; right: 20px; bottom: 20px; z-index: 3000; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; pointer-events: none; }
+  .toast { display: flex; align-items: center; gap: 10px; max-width: 440px; padding: 10px 14px; border-radius: 11px; font-size: 13px;
+           background: rgba(26,30,38,.94); backdrop-filter: blur(12px); border: 1px solid var(--line2);
+           box-shadow: 0 14px 34px -10px rgba(0,0,0,.7); animation: tin .25s cubic-bezier(.2,.9,.3,1.2); transition: opacity .3s, transform .3s; }
+  .toast::before { content: ""; width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .toast.err::before { background: var(--bad); box-shadow: 0 0 8px var(--bad); }
+  .toast.out { opacity: 0; transform: translateX(14px); }
+  @keyframes tin { from { opacity: 0; transform: translateY(8px) scale(.97); } }
+  dialog { width: min(420px, 92vw); padding: 22px; border: 1px solid var(--line2); border-radius: 16px;
+           background: var(--panel2); color: var(--text); box-shadow: 0 30px 80px -20px rgba(0,0,0,.85); }
+  dialog::backdrop { background: rgba(4,5,8,.6); backdrop-filter: blur(3px); }
+  dialog[open] { animation: pop .18s ease-out; }
+  @keyframes pop { from { opacity: 0; transform: scale(.96); } }
+  dialog h3 { margin: 0 0 6px; font-size: 16px; }
+  dialog p { margin: 0 0 22px; color: var(--muted); }
+  dialog form { display: flex; justify-content: flex-end; gap: 8px; margin: 0; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+    .slot .glint { background-position: 50% 50%; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <h1>Minecraft Server Dashboard</h1>
-  <nav class="tabs">
-    <button data-tab="overview" class="active">Overview</button>
-    <button data-tab="server">MC Server</button>
-    <button data-tab="players">Players</button>
-    <button data-tab="bot">Discord Bot</button>
-    <button data-tab="playit">Playit</button>
-    <button data-tab="config">Config</button>
-    <span class="header-actions">
-      <button id="start-all">Start All</button>
-      <button id="stop-mc">Stop Server + Tunnel</button>
-      <button id="stop-all">Stop All</button>
-    </span>
-  </nav>
-</header>
-<main>
-  <section id="tab-overview" class="tab">
-    <div class="tiles" id="overview-tiles"></div>
-    <div class="card" style="margin-top:16px">
-      <h2>History (last ~40 min)</h2>
-      <div id="history" class="tiles"></div>
-    </div>
-    <div class="card" style="margin-top:16px">
-      <h2>Alerts</h2>
-      <div id="alerts" class="muted">No alerts.</div>
-    </div>
-    <div class="card" style="margin-top:16px">
-      <h2>MC Server Console</h2>
-      <pre class="log" id="overview-server-log">No server running.</pre>
-    </div>
-  </section>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-cube" viewBox="0 0 24 24"><path d="M12 2.5l8.5 4.7-8.5 4.8-8.5-4.8z" fill="#62c94a"/><path d="M3.5 7.2l8.5 4.8v9.5l-8.5-4.8z" fill="#7b5230"/><path d="M20.5 7.2L12 12v9.5l8.5-4.8z" fill="#5a3a1f"/><path d="M3.5 7.2l8.5 4.8v2.2l-8.5-4.8zM20.5 7.2L12 12v2.2l8.5-4.8z" fill="#4c9a37"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></symbol>
+  <symbol id="i-server" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="8" rx="2"/><rect x="2" y="13" width="20" height="8" rx="2"/><path d="M6 7h.01M6 17h.01"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+  <symbol id="i-bot" viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="12" rx="3"/><path d="M12 8V4H8M2 14h1M21 14h1M9 13v2M15 13v2"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 2v10M18.4 6.6a9 9 0 1 1-12.8 0"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/></symbol>
+  <symbol id="i-term" viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></symbol>
+  <symbol id="i-save" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></symbol>
+  <symbol id="i-archive" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="5" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M17.5 19H9a7 7 0 1 1 6.7-9h1.8a4.5 4.5 0 1 1 0 9z"/></symbol>
+  <symbol id="i-timer" viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M9 2h6"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/></symbol>
+</svg>
 
-  <section id="tab-server" class="tab" hidden>
-    <div class="card">
-      <h2>Servers</h2>
-      <div id="server-list"></div>
-      <div id="status-panel" style="margin-top:14px"></div>
-      <div id="players-admin" style="margin-top:12px"></div>
-      <div class="row" id="quick-actions" style="flex-wrap:wrap; margin-top:12px">
-        <button class="act qa" data-cmd="save-all">Save All</button>
-        <button class="act qa" data-cmd="weather clear">Clear Weather</button>
-        <button class="act qa" data-cmd="time set day">Set Day</button>
-        <button class="act qa" data-cmd="time set night">Set Night</button>
-        <button class="act qa danger" id="stop-countdown">Stop (30s warning)</button>
-        <button class="act" id="backup-now">Backup now</button>
-        <span id="backup-status" class="muted"></span>
-      </div>
-      <div id="backup-list" class="muted" style="margin-top:6px"></div>
-      <div class="row" style="margin-top:10px">
-        <input id="log-filter" placeholder="Filter console…" style="flex:1">
-        <label class="muted" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="log-pause"> pause</label>
-        <button class="act" id="log-download">Download log</button>
-      </div>
-      <pre class="log" id="server-log">No server running.</pre>
-      <div class="row">
-        <input id="cmd" placeholder="Console command (e.g. say hello)" disabled>
-        <button class="act" id="cmd-send" disabled>Send</button>
-      </div>
+<div class="app">
+  <aside class="side">
+    <div class="brand"><svg><use href="#i-cube"/></svg><div><b>Minecraft</b><small>Server Dashboard</small></div></div>
+    <nav class="nav">
+      <button data-tab="overview" title="Overview"><svg class="i"><use href="#i-grid"/></svg><span>Overview</span></button>
+      <button data-tab="server" title="Server"><svg class="i"><use href="#i-server"/></svg><span>Server</span><i class="dot" id="nd-server"></i></button>
+      <button data-tab="players" title="Players"><svg class="i"><use href="#i-users"/></svg><span>Players</span><em class="count" id="nd-players"></em></button>
+      <button data-tab="bot" title="Discord Bot"><svg class="i"><use href="#i-bot"/></svg><span>Discord Bot</span><i class="dot" id="nd-bot"></i></button>
+      <button data-tab="playit" title="Tunnel"><svg class="i"><use href="#i-globe"/></svg><span>Tunnel</span><i class="dot" id="nd-playit"></i></button>
+      <button data-tab="config" title="Config"><svg class="i"><use href="#i-sliders"/></svg><span>Config</span></button>
+    </nav>
+    <div class="side-foot">
+      <div id="side-join"></div>
+      <div class="hint"><kbd>1</kbd>–<kbd>6</kbd> switch tabs<br><kbd>/</kbd> console command</div>
     </div>
-  </section>
+  </aside>
 
-  <section id="tab-players" class="tab" hidden>
-    <div class="card">
-      <h2>Players</h2>
-      <div class="row" id="player-filters" style="flex-wrap:wrap">
-        <button class="act pf active-f" data-f="all">All</button>
-        <button class="act pf" data-f="online">Online</button>
-        <button class="act pf" data-f="whitelisted">Whitelist</button>
-        <button class="act pf" data-f="opped">OPs</button>
-        <button class="act pf" data-f="banned">Banned</button>
-        <span id="players-note" class="muted"></span>
+  <div class="main">
+    <header class="top">
+      <div><h1 id="page-title">Overview</h1><div id="page-sub"></div></div>
+      <div class="power">
+        <button class="btn go" id="start-all"><svg class="i"><use href="#i-play"/></svg>Start all</button>
+        <button class="btn warn" id="stop-mc" title="Stop the Minecraft server and playit tunnel; the Discord bot keeps running"><svg class="i"><use href="#i-stop"/></svg>Server + tunnel</button>
+        <button class="btn bad" id="stop-all"><svg class="i"><use href="#i-power"/></svg>Stop all</button>
       </div>
-      <div class="tiles" id="players-grid" style="margin-top:12px"></div>
-      <div id="banned-ips" class="muted" style="margin-top:8px"></div>
-    </div>
-    <div class="card" id="player-detail" style="margin-top:16px" hidden></div>
-  </section>
+    </header>
 
-  <section id="tab-bot" class="tab" hidden>
-    <div class="card">
-      <h2>Discord Bot <span id="bot-badge" class="badge offline">stopped</span></h2>
-      <form class="settings" id="bot-form">
-        <label>Channel ID</label><input name="CHANNEL_ID">
-        <label>MC host</label><input name="MC_HOST">
-        <label>MC port</label><input name="MC_PORT">
-        <label>Poll interval (s)</label><input name="POLL_INTERVAL">
-        <label>Guild ID</label><input name="GUILD_ID">
-        <label>Token</label><span class="muted" id="token-state">—</span>
-      </form>
-      <div class="row">
-        <button class="act" id="bot-save">Save settings</button>
-        <button class="act" id="bot-start">Start bot</button>
-        <button class="act danger" id="bot-stop">Stop bot</button>
-      </div>
-      <pre class="log" id="bot-log">Bot not running.</pre>
-    </div>
-  </section>
+    <main>
+      <section id="tab-overview" class="tab">
+        <div class="grid g-ov">
+          <div class="card hero off" id="ov-hero"></div>
+          <div class="card"><div class="card-h"><h2>Services</h2></div><div id="ov-services"></div></div>
+        </div>
+        <div class="card">
+          <div class="card-h"><h2>History</h2><span class="muted">last ~40 min · 10s samples</span></div>
+          <div id="history" class="charts"></div>
+        </div>
+        <div class="grid g-split">
+          <div class="card"><div class="card-h"><svg class="i" style="color:var(--muted)"><use href="#i-bell"/></svg><h2>Alerts</h2></div><div id="alerts" class="alerts"></div></div>
+          <div class="card term">
+            <div class="term-bar"><svg class="i"><use href="#i-term"/></svg><h2>Console</h2><i class="live" id="ov-live"></i>
+              <div class="end"><button class="btn sm ghost" data-goto="server">Open full console</button></div></div>
+            <pre class="log short" id="overview-server-log">No server running.</pre>
+          </div>
+        </div>
+      </section>
 
-  <section id="tab-playit" class="tab" hidden>
-    <div class="card">
-      <h2>Playit.gg Tunnel <span id="playit-badge" class="badge offline">unknown</span></h2>
-      <div id="playit-address" class="muted" style="margin-bottom:6px"></div>
-      <div id="playit-status" class="muted"></div>
-      <div class="row">
-        <button class="act" id="playit-start">Start tunnel</button>
-        <button class="act danger" id="playit-stop">Stop tunnel</button>
-      </div>
-      <pre class="log" id="playit-log">Loading…</pre>
-    </div>
-  </section>
+      <section id="tab-server" class="tab" hidden>
+        <div class="grid g-side">
+          <div class="col">
+            <div class="card"><div class="card-h"><h2>Servers</h2><button class="btn sm ghost icon end" data-goto="config" title="Change servers folder"><svg class="i"><use href="#i-folder"/></svg></button></div><div id="server-list"></div></div>
+            <div class="card">
+              <div class="card-h"><h2>Quick actions</h2></div>
+              <div class="qa-grid" id="quick-actions">
+                <button class="btn qa" data-cmd="save-all"><svg class="i"><use href="#i-save"/></svg>Save all</button>
+                <button class="btn qa" data-cmd="weather clear"><svg class="i"><use href="#i-cloud"/></svg>Clear weather</button>
+                <button class="btn qa" data-cmd="time set day"><svg class="i"><use href="#i-sun"/></svg>Set day</button>
+                <button class="btn qa" data-cmd="time set night"><svg class="i"><use href="#i-moon"/></svg>Set night</button>
+                <button class="btn qa bad wide" id="stop-countdown"><svg class="i"><use href="#i-timer"/></svg>Stop with 30s warning</button>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-h"><h2>Backups</h2><button class="btn sm end" id="backup-now"><svg class="i"><use href="#i-archive"/></svg>Backup now</button></div>
+              <div id="backup-status" class="muted"></div>
+              <div id="backup-list" class="blist"></div>
+            </div>
+          </div>
+          <div class="col">
+            <div class="card">
+              <div class="card-h"><h2>Status</h2><span id="status-pill"></span>
+                <button class="btn sm bad end" id="stop-btn" hidden><svg class="i"><use href="#i-stop"/></svg>Stop</button></div>
+              <div id="status-panel"></div>
+              <div id="players-admin"></div>
+            </div>
+            <div class="card term">
+              <div class="term-bar"><svg class="i"><use href="#i-term"/></svg><h2>Console</h2><i class="live" id="srv-live"></i>
+                <div class="end">
+                  <label class="search"><svg class="i"><use href="#i-search"/></svg><input id="log-filter" placeholder="Filter lines"></label>
+                  <label class="toggle"><input type="checkbox" class="switch" id="log-pause">Pause</label>
+                  <button class="btn sm icon ghost" id="log-download" title="Download latest.log"><svg class="i"><use href="#i-download"/></svg></button>
+                </div>
+              </div>
+              <pre class="log" id="server-log">No server running.</pre>
+              <div class="term-in"><b>›</b><input id="cmd" placeholder="Console command (e.g. say hello)" autocomplete="off" disabled>
+                <button class="btn sm" id="cmd-send" disabled>Send</button></div>
+            </div>
+          </div>
+        </div>
+      </section>
 
-  <section id="tab-config" class="tab" hidden>
-    <div class="card">
-      <h2>Server Config</h2>
-      <div class="row" style="align-items:center">
-        <span class="muted">Servers folder</span>
-        <input id="cfg-root" style="flex:1" placeholder="C:\path\to\Minecraft Servers">
-        <button class="act" id="cfg-root-browse">Browse…</button>
-        <button class="act" id="cfg-root-save">Save</button>
-      </div>
-      <div class="row" style="align-items:center">
-        <span class="muted">Server</span>
-        <select id="cfg-server"></select>
-        <span id="cfg-running" class="muted"></span>
-      </div>
-      <h2 style="margin-top:16px">server.properties</h2>
-      <form class="settings" id="cfg-props"></form>
-      <div class="row"><button class="act" id="cfg-props-save">Save properties</button></div>
-      <h2 style="margin-top:16px">Memory (JVM)</h2>
-      <form class="settings" id="cfg-mem">
-        <label>Max (-Xmx)</label><input name="xmx" placeholder="e.g. 8G">
-        <label>Min (-Xms)</label><input name="xms" placeholder="e.g. 4G">
-      </form>
-      <div class="row"><button class="act" id="cfg-mem-save">Save memory</button></div>
-      <h2 style="margin-top:16px">Mods (<span id="cfg-mod-count">0</span>)</h2>
-      <pre class="log" id="cfg-mods" style="height:30vh">—</pre>
-    </div>
-  </section>
-</main>
+      <section id="tab-players" class="tab" hidden>
+        <div class="grid g-side">
+          <div class="card plist">
+            <div class="card-h"><h2>Players</h2><em class="count" id="players-count"></em></div>
+            <label class="search"><svg class="i"><use href="#i-search"/></svg><input id="player-search" placeholder="Search players"></label>
+            <div class="seg" id="player-filters">
+              <button class="pf active-f" data-f="all">All</button>
+              <button class="pf" data-f="online">Online</button>
+              <button class="pf" data-f="whitelisted">Allowed</button>
+              <button class="pf" data-f="opped">OPs</button>
+              <button class="pf" data-f="banned">Banned</button>
+            </div>
+            <div id="players-note" class="note"></div>
+            <div id="players-grid" class="prows"></div>
+            <div id="banned-ips" class="muted"></div>
+          </div>
+          <div class="card" id="player-detail"><div class="empty"><svg class="i"><use href="#i-users"/></svg>Select a player to see their stats and inventory.</div></div>
+        </div>
+      </section>
+
+      <section id="tab-bot" class="tab" hidden>
+        <div class="grid g-side">
+          <div class="card">
+            <div class="card-h"><h2>Discord bot</h2><span id="bot-badge" class="pill">stopped</span></div>
+            <form class="fields" id="bot-form" style="grid-template-columns:1fr 1fr">
+              <label class="field" style="grid-column:1/-1"><span>Channel ID</span><input name="CHANNEL_ID"></label>
+              <label class="field" style="grid-column:1/-1"><span>Guild ID</span><input name="GUILD_ID"></label>
+              <label class="field"><span>MC host</span><input name="MC_HOST"></label>
+              <label class="field"><span>MC port</span><input name="MC_PORT"></label>
+              <label class="field"><span>Poll interval (s)</span><input name="POLL_INTERVAL"></label>
+              <div class="field"><span>Token</span><span id="token-state" class="muted" style="line-height:32px">—</span></div>
+            </form>
+            <div class="actions">
+              <button class="btn" id="bot-save"><svg class="i"><use href="#i-save"/></svg>Save</button>
+              <button class="btn go" id="bot-start"><svg class="i"><use href="#i-play"/></svg>Start</button>
+              <button class="btn bad" id="bot-stop"><svg class="i"><use href="#i-stop"/></svg>Stop</button>
+            </div>
+          </div>
+          <div class="card term">
+            <div class="term-bar"><svg class="i"><use href="#i-term"/></svg><h2>Bot output</h2><i class="live" id="bot-live"></i></div>
+            <pre class="log" id="bot-log">Bot not running.</pre>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-playit" class="tab" hidden>
+        <div class="grid g-side">
+          <div class="card">
+            <div class="card-h"><h2>Playit.gg tunnel</h2><span id="playit-badge" class="pill">unknown</span></div>
+            <div id="playit-address"></div>
+            <div id="playit-status" class="kv"></div>
+            <div class="actions">
+              <button class="btn go" id="playit-start"><svg class="i"><use href="#i-play"/></svg>Start tunnel</button>
+              <button class="btn bad" id="playit-stop"><svg class="i"><use href="#i-stop"/></svg>Stop tunnel</button>
+            </div>
+            <p class="muted" style="margin:16px 0 0">The tunnel follows the server — it comes up when a server starts and goes down when it stops.</p>
+          </div>
+          <div class="card term">
+            <div class="term-bar"><svg class="i"><use href="#i-term"/></svg><h2>Tunnel log</h2><i class="live" id="playit-live"></i></div>
+            <pre class="log" id="playit-log">Loading…</pre>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-config" class="tab" hidden>
+        <div class="card">
+          <div class="card-h"><h2>Servers folder</h2><span class="muted">each subfolder with a server.properties + start .bat is a server</span></div>
+          <div class="row">
+            <label class="search" style="flex:1"><svg class="i"><use href="#i-folder"/></svg><input id="cfg-root" placeholder="C:\path\to\Minecraft Servers"></label>
+            <button class="btn" id="cfg-root-browse">Browse…</button>
+            <button class="btn go" id="cfg-root-save">Save</button>
+          </div>
+          <div class="row" style="margin-top:14px">
+            <span class="lbl">Editing</span><select id="cfg-server" style="min-width:200px"></select>
+          </div>
+          <div id="cfg-running" class="note" style="margin-top:12px"></div>
+        </div>
+        <div class="grid g-cfg">
+          <div class="card">
+            <div class="card-h"><h2>server.properties</h2><button class="btn sm end" id="cfg-props-save"><svg class="i"><use href="#i-save"/></svg>Save properties</button></div>
+            <form id="cfg-props"></form>
+          </div>
+          <div class="col">
+            <div class="card">
+              <div class="card-h"><h2>Memory (JVM)</h2><button class="btn sm end" id="cfg-mem-save"><svg class="i"><use href="#i-save"/></svg>Save</button></div>
+              <form class="fields" id="cfg-mem" style="grid-template-columns:1fr 1fr">
+                <label class="field"><span>Max (-Xmx)</span><input name="xmx" placeholder="e.g. 8G"></label>
+                <label class="field"><span>Min (-Xms)</span><input name="xms" placeholder="e.g. 4G"></label>
+              </form>
+            </div>
+            <div class="card">
+              <div class="card-h"><h2>Mods</h2><em class="count" id="cfg-mod-count">0</em></div>
+              <label class="search"><svg class="i"><use href="#i-search"/></svg><input id="cfg-mod-filter" placeholder="Filter mods"></label>
+              <div id="cfg-mods" class="mods"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<div id="toasts" role="status" aria-live="polite"></div>
+<dialog id="ask"><h3 id="ask-title"></h3><p id="ask-msg"></p>
+  <form method="dialog"><button class="btn ghost" value="">Cancel</button><button class="btn bad" value="ok" id="ask-ok">Confirm</button></form>
+</dialog>
 
 <script>
 const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
 const api = (u, body) => fetch(u, body ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)} : {}).then(r => r.json());
-const esc = s => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const ic = n => `<svg class="i"><use href="#i-${n}"/></svg>`;
+// Only touch the DOM when the markup changed: keeps hover/focus/open selects alive across polls.
+function setHTML(el, html) { if (el._html !== html) { el._html = html; el.innerHTML = html; } }
 function copyText(t) {
   if (navigator.clipboard) { navigator.clipboard.writeText(t); return; }
   const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta);
   ta.select(); try { document.execCommand('copy'); } catch (e) {} ta.remove();
+}
+function toast(msg, kind = '') {
+  const t = document.createElement('div'); t.className = 'toast ' + kind; t.textContent = msg;
+  $('#toasts').appendChild(t);
+  setTimeout(() => t.classList.add('out'), kind === 'err' ? 6000 : 3200);
+  setTimeout(() => t.remove(), kind === 'err' ? 6400 : 3600);
+}
+function ask(title, msg, ok = 'Confirm') {
+  const d = $('#ask');
+  $('#ask-title').textContent = title; $('#ask-msg').textContent = msg; $('#ask-ok').textContent = ok;
+  d.returnValue = ''; d.showModal();
+  return new Promise(res => d.addEventListener('close', () => res(d.returnValue === 'ok'), { once: true }));
+}
+// POST an action; surface errors (and an optional success message) as toasts, spinner on btn meanwhile.
+async function act(url, body = {}, okMsg, btn) {
+  if (btn) { btn.disabled = true; btn.classList.add('busy'); }
+  try {
+    const r = await api(url, body);
+    if (r.error) toast(r.error, 'err'); else if (okMsg) toast(okMsg);
+    return r;
+  } catch (e) { toast('Request failed: ' + e.message, 'err'); return { error: e.message }; }
+  finally { if (btn) { btn.disabled = false; btn.classList.remove('busy'); } }
 }
 function logLevel(line) {
   if (/\/(ERROR|FATAL|SEVERE)\]|\b(ERROR|FATAL|SEVERE)\b|Exception|Traceback/.test(line)) return 'error';
@@ -270,134 +646,193 @@ function logLevel(line) {
   return 'info';
 }
 function writeLog(el, lines, empty) {
+  const key = lines && lines.length ? lines.join('\n') : empty;
+  if (el._key === key) return;  // unchanged: don't clobber a text selection
+  el._key = key;
   const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
   if (lines && lines.length)
-    el.innerHTML = lines.map(l => `<span class="${logLevel(l)}">${esc(l)}</span>`).join('\n');
+    el.innerHTML = lines.map(l => `<span class="${logLevel(l)}">${esc(l).replace(/^\[[\d:.]+\]/, '<span class="ts">$&</span>')}</span>`).join('\n');
   else
     el.textContent = empty;
   if (atBottom) el.scrollTop = el.scrollHeight;
 }
+function avatar(name, cls = '') {
+  let h = 0; for (const c of name) h = (h * 31 + c.charCodeAt(0)) % 360;
+  return `<span class="av ${cls}" style="--h:${h}" title="${esc(name)}">${esc(name[0] || '?').toUpperCase()}</span>`;
+}
+function ago(t) {
+  const s = Date.now() / 1000 - t;
+  return s < 60 ? 'just now' : s < 3600 ? Math.floor(s / 60) + 'm ago'
+       : s < 86400 ? Math.floor(s / 3600) + 'h ago' : new Date(t * 1000).toLocaleDateString();
+}
+const STATE_CLS = { online: 'ok', starting: 'mid', stopping: 'mid' };
+const cap = s => s[0].toUpperCase() + s.slice(1);
+const pill = (st, label = st) => `<span class="pill ${STATE_CLS[st] || ''}">${esc(label)}</span>`;
 
 // --- tabs ---
-document.querySelectorAll('nav.tabs button[data-tab]').forEach(btn => {
-  btn.onclick = () => {
-    document.querySelectorAll('nav.tabs button[data-tab]').forEach(b => b.classList.toggle('active', b === btn));
-    document.querySelectorAll('.tab').forEach(t => t.hidden = t.id !== 'tab-' + btn.dataset.tab);
-    if (btn.dataset.tab === 'players') refreshPlayers();
-    if (btn.dataset.tab === 'config') { loadRoot(); loadConfigServers().then(loadConfig); }
-  };
+const TABS = [...$$('.nav button[data-tab]')].map(b => b.dataset.tab);
+let curTab = 'overview';
+function show(tab) {
+  curTab = tab;
+  try { localStorage.tab = tab; } catch (e) {}
+  $$('.nav button[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  $$('.tab').forEach(t => t.hidden = t.id !== 'tab-' + tab);
+  $('#page-title').textContent = $(`.nav button[data-tab="${tab}"] span`).textContent;
+  if (tab === 'players') refreshPlayers();
+  if (tab === 'config') { loadRoot(); loadConfigServers().then(loadConfig); }
+}
+$$('.nav button[data-tab]').forEach(b => b.onclick = () => show(b.dataset.tab));
+document.addEventListener('keydown', e => {
+  if (e.ctrlKey || e.metaKey || e.altKey || e.target.closest('input, select, textarea, dialog')) return;
+  if (TABS[e.key - 1]) show(TABS[e.key - 1]);
+  else if (e.key === '/') { e.preventDefault(); show('server'); $('#cmd').focus(); }
+});
+document.addEventListener('click', e => {
+  const c = e.target.closest('[data-copy]');
+  if (c) { copyText(c.dataset.copy); toast('Copied ' + c.dataset.copy); return; }
+  const g = e.target.closest('[data-goto]');
+  if (g) { show(g.dataset.goto); return; }
+  const a = e.target.closest('[data-act]');
+  if (a) { act(a.dataset.act, {}, null, a).then(tick); return; }
+  const sl = e.target.closest('#start-last');
+  if (sl) act('/api/server/start-last', {}, null, sl).then(r => { if (r.ok) toast(`Starting ${r.server}…`); refreshServers(); tick(); });
 });
 
 let running = null;       // name of running server, or null
+let lastServers = [];
 let selectedScript = {};  // per-server chosen script
 let lastStatus = { state: 'offline' };
 let lastBot = null;
 let lastPlayit = null;
 
-// --- overview ---
-const badge = st => `<span class="badge ${st}">${st}</span>`;
+// --- overview + chrome ---
+function gauge(label, val, pct, color, sub = '') {
+  const p = Math.max(0, Math.min(100, pct || 0));
+  return `<div class="gauge"><div class="ring" style="--p:${p};--c:${color}"><b>${val}</b></div><span>${label}</span><small>${sub}</small></div>`;
+}
+const tpsColor = t => t >= 18 ? 'var(--ok)' : t >= 12 ? 'var(--mid)' : 'var(--bad)';
 function renderOverview() {
-  const s = lastStatus || { state: 'offline' };
-  const b = lastBot;
-  const p = s.players, m = s.metrics || {};
-  const on = s.state !== 'offline';
-  const tiles = [
-    ['Server', on
-      ? `${badge(s.state)}<div class="big" style="margin-top:6px">${s.name || ''}</div><div class="muted">${s.address || ''}</div>`
-      : badge('offline')],
-    ['Players', s.state === 'online' && p
-      ? `<div class="big">${p.online}/${p.max}</div><div class="muted">${p.names && p.names.length ? p.names.join(', ') : 'nobody online'}</div>`
-      : '<div class="big">—</div>'],
-    ['Uptime', `<div class="big">${on ? (s.uptime || '—') : '—'}</div>`],
-    ['CPU / RAM', on
-      ? `<div class="big">${m.cpu ?? 0}%</div><div class="muted">${m.mem_mb ?? 0} MB · ${m.threads ?? 0} threads</div>`
-      : '<div class="big">—</div>'],
-    ['TPS', on && s.tps
-      ? `<div class="big">${s.tps.tps}</div><div class="muted">${s.tps.mspt != null ? s.tps.mspt + ' ms/tick' : ''}</div>`
-      : '<div class="big">—</div>'],
-    ['Discord bot', b
-      ? `${badge(b.running ? 'online' : 'offline')}<div class="muted" style="margin-top:6px">${b.running ? 'running' : 'stopped'}</div>`
-      : '<div class="big">—</div>'],
-    ['Playit tunnel', lastPlayit && !(lastPlayit.status || {}).error
-      ? `${badge(lastPlayit.status.running ? 'online' : 'offline')}<div class="muted" style="margin-top:6px">${lastPlayit.status.running ? (lastPlayit.status.uptime ? 'up ' + lastPlayit.status.uptime : 'running') : (lastPlayit.status.phase || 'stopped')}</div>${lastPlayit.address ? `<div class="muted" style="margin-top:4px">${esc(lastPlayit.address)} <button class="pbtn" onclick="copyText('${lastPlayit.address}')">copy</button></div>` : ''}`
-      : `<div class="big">—</div>`],
+  const s = lastStatus || { state: 'offline' }, m = s.metrics || {}, p = s.players, t = s.tps, sys = s.system || {};
+  const on = s.state !== 'offline', up = s.state === 'online';
+  const b = lastBot, lp = lastPlayit, ps = (lp && lp.status) || {};
+  const names = ((p && p.names) || []).filter(n => n && n !== 'Anonymous Player');
+  const faces = names.length
+    ? `<div class="faces">${names.slice(0, 8).map(n => avatar(n, 'sm')).join('')}<em>${names.length > 8 ? `+${names.length - 8} more` : names.join(', ')}</em></div>` : '';
+  const left = on ? `<div class="hero-l">${pill(s.state)}
+      <div class="hero-name">${esc(s.name)}</div>
+      <div class="hero-meta"><button class="chip" data-copy="${esc(s.address)}">${ic('copy')}<span>${esc(s.address)}</span></button>
+        <span>up ${esc(s.uptime)}</span>${s.version ? `<span>${esc(s.version)}</span>` : ''}</div>
+      ${s.motd ? `<div class="motd">${esc(s.motd)}</div>` : ''}${faces}</div>`
+    : `<div class="hero-l">${pill('offline')}<div class="hero-name dim">Server offline</div>
+      <div class="hero-meta"><button class="btn go" id="start-last">${ic('play')}Start last server</button>
+        <button class="btn ghost" data-goto="server">Choose server</button></div></div>`;
+  const memGb = (m.mem_mb || 0) / 1024;
+  const gauges = [
+    gauge('TPS', on && t ? t.tps : '—', on && t ? t.tps / 20 * 100 : 0, tpsColor(t && t.tps), on && t && t.mspt != null ? t.mspt + ' ms/tick' : ''),
+    gauge('CPU', on ? Math.round(m.cpu || 0) + '%' : '—', on ? m.cpu : 0, 'var(--blue)', on ? (m.threads || 0) + ' threads' : ''),
+    gauge('RAM', on ? memGb.toFixed(1) + 'G' : '—', on && sys.mem_total_gb ? memGb / sys.mem_total_gb * 100 : 0, 'var(--violet)', on && sys.mem_total_gb ? `of ${sys.mem_total_gb} GB` : ''),
+    gauge('Players', up && p ? `${p.online}/${p.max}` : '—', up && p && p.max ? p.online / p.max * 100 : 0, 'var(--mid)', up && p ? (p.online ? 'online now' : 'nobody on') : ''),
   ];
-  $('#overview-tiles').innerHTML = tiles.map(([k, v]) => `<div class="tile"><div class="tile-k">${k}</div>${v}</div>`).join('');
+  $('#ov-hero').classList.toggle('off', !on);
+  setHTML($('#ov-hero'), left + `<div class="gauges">${gauges.join('')}</div>`);
+
+  const svc = (icon, name, isOn, sub, start, stop) => `<div class="svc">
+      <span class="svc-ic${isOn ? ' on' : ''}">${ic(icon)}</span>
+      <div class="svc-t"><b>${name}</b><small>${sub}</small></div>
+      ${start ? `<button class="btn sm ${isOn ? '' : 'go'}" data-act="${isOn ? stop : start}">${isOn ? 'Stop' : 'Start'}</button>` : ''}</div>`;
+  setHTML($('#ov-services'), [
+    svc('server', 'Minecraft server', on, on ? `${esc(s.name)} · ${esc(s.state)}` : 'offline'),
+    svc('bot', 'Discord bot', b && b.running, b ? (b.running ? 'running' : 'stopped') : '…', '/api/bot/start', '/api/bot/stop'),
+    ps.error ? svc('globe', 'Playit tunnel', false, 'playit not found')
+      : svc('globe', 'Playit tunnel', ps.running, lp ? (ps.running ? (ps.uptime ? 'up ' + esc(ps.uptime) : 'running') : esc(ps.phase || 'stopped')) : '…', '/api/playit/start', '/api/playit/stop'),
+  ].join(''));
+
+  // sidebar + top bar
+  $('#nd-server').className = 'dot ' + (STATE_CLS[s.state] || '');
+  $('#nd-bot').className = 'dot ' + (b && b.running ? 'ok' : '');
+  $('#nd-playit').className = 'dot ' + (ps.running ? 'ok' : '');
+  $('#nd-players').textContent = up && p && p.online ? p.online : '';
+  for (const [id, live] of [['#ov-live', on], ['#srv-live', on], ['#bot-live', b && b.running], ['#playit-live', ps.running]])
+    $(id).className = 'live' + (live ? ' ok' : '');
+  setHTML($('#page-sub'), on ? `${pill(s.state)}<span>${esc(s.name)}</span><span>·</span><span>up ${esc(s.uptime)}</span>${up && p ? `<span>·</span><span>${p.online}/${p.max} players</span>` : ''}`
+    : '<span>No server running</span>');
+  setHTML($('#side-join'), lp && lp.address
+    ? `<span class="lbl">Join address</span><button class="chip" data-copy="${esc(lp.address)}" title="Copy">${ic('copy')}<span>${esc(lp.address)}</span></button>` : '');
+  const botOn = !!(b && b.running), tunOn = !!ps.running;
+  $('#start-all').disabled = on && botOn && tunOn;
+  $('#stop-mc').disabled = !on && !tunOn;
+  $('#stop-all').disabled = !on && !botOn && !tunOn;
 }
 
 // --- MC server tab ---
 async function refreshServers() {
   const { servers, running: run } = await api('/api/servers');
-  running = run;
-  const list = $('#server-list');
-  list.innerHTML = '';
-  for (const s of servers) {
-    const row = document.createElement('div');
-    row.className = 'server-row';
-    const opts = s.scripts.map(x => `<option>${x}</option>`).join('');
-    const isRunning = run === s.name;
-    const disableStart = run !== null;
-    row.innerHTML = `
-      <span class="name">${s.name}</span>
-      <select ${isRunning || !s.scripts.length ? 'disabled' : ''} data-name="${s.name}">${opts}</select>
-      <button class="act" data-start="${s.name}" ${disableStart || !s.scripts.length ? 'disabled' : ''}>Start</button>`;
-    list.appendChild(row);
-  }
-  list.querySelectorAll('select').forEach(el => {
-    if (selectedScript[el.dataset.name]) el.value = selectedScript[el.dataset.name];
-    el.onchange = () => selectedScript[el.dataset.name] = el.value;
-  });
-  list.querySelectorAll('button[data-start]').forEach(el => {
-    el.onclick = async () => {
-      const name = el.dataset.start;
-      const sel = list.querySelector(`select[data-name="${name}"]`);
-      const res = await api('/api/server/start', { name, script: sel.value });
-      if (res.error) alert(res.error);
-      refreshServers(); refreshStatus();
-    };
-  });
+  running = run; lastServers = servers;
+  setHTML($('#server-list'), servers.length ? servers.map(s => {
+    const isRun = run === s.name, n = esc(s.name);
+    const pick = s.scripts.length > 1
+      ? `<select data-name="${n}">${s.scripts.map(x => `<option${selectedScript[s.name] === x ? ' selected' : ''}>${esc(x)}</option>`).join('')}</select>` : '';
+    return `<div class="srv-row${isRun ? ' running' : ''}"><svg><use href="#i-cube"/></svg>
+      <div class="srv-t"><b>${n}</b><small>port ${s.port}${s.scripts.length ? (s.scripts.length === 1 ? ' · ' + esc(s.scripts[0]) : '') : ' · no start .bat'}</small></div>
+      ${isRun ? pill(lastStatus.state === 'offline' ? 'starting' : lastStatus.state)
+              : `${pick}<button class="btn sm go" data-start="${n}"${run !== null || !s.scripts.length ? ' disabled' : ''}>${ic('play')}Start</button>`}</div>`;
+  }).join('') : '<div class="empty sm">No servers found — set the servers folder on the Config tab.</div>');
 }
+$('#server-list').addEventListener('change', e => { if (e.target.dataset.name) selectedScript[e.target.dataset.name] = e.target.value; });
+$('#server-list').addEventListener('click', async e => {
+  const b = e.target.closest('button[data-start]'); if (!b) return;
+  const name = b.dataset.start, s = lastServers.find(x => x.name === name);
+  const script = selectedScript[name] || s.scripts[0];
+  const r = await act('/api/server/start', { name, script }, `Starting ${name}…`, b);
+  if (r.replaced) toast(`Stopped ${r.replaced} first`);
+  refreshServers(); refreshStatus();
+});
 
 function statusPanel(d) {
-  if (d.state === 'offline') return '<span class="badge offline">offline</span>';
-  const m = d.metrics || {}, p = d.players;
-  const rows = [
-    ['', badge(d.state) + `  <button class="act danger" id="stop-btn">Stop</button>`
-        + (d.adopted ? ` <span class="muted">reconnected${d.rcon ? ' — commands via RCON' : ' — console read-only (enable RCON to send commands)'}</span>` : '')],
-    ['Server', d.name || ''],
-    ['Address', d.address || ''],
-    ['Uptime', d.uptime || ''],
-    ['Version', d.version || '—'],
-    ['MOTD', d.motd || '—'],
-    ['Players', p ? `${p.online}/${p.max}${p.names && p.names.length ? ' — ' + p.names.join(', ') : ''}` : '—'],
-    ['CPU / RAM', `${m.cpu ?? 0}%  /  ${m.mem_mb ?? 0} MB`],
-    ['TPS', d.tps ? `${d.tps.tps} (1m)${d.tps.mspt != null ? '  ·  ' + d.tps.mspt + ' ms/tick' : ''}${d.tps.series ? '  [' + d.tps.series.join(', ') + ' @ 5s/10s/1m/5m/15m]' : ''}` : '— (spark only)'],
+  if (d.state === 'offline') return '<div class="empty sm">No server running — start one from the list.</div>';
+  const m = d.metrics || {}, p = d.players, t = d.tps, sys = d.system;
+  const cells = [
+    ['Address', `<button class="chip" data-copy="${esc(d.address)}">${ic('copy')}<span>${esc(d.address)}</span></button>`],
+    ['Uptime', esc(d.uptime)],
+    ['Version', esc(d.version || '—')],
+    ['Players', p ? `${p.online} / ${p.max}` : '—'],
+    ['TPS', t ? `${t.tps}${t.mspt != null ? ` <small>${t.mspt} ms/tick</small>` : ''}` : '<small>— spark only</small>'],
+    ['CPU', `${m.cpu ?? 0}%`],
+    ['Memory', `${m.mem_mb ?? 0} <small>MB</small>`],
     ['Threads', m.threads ?? '—'],
-    ['Disk I/O', `${m.disk_read ?? 0} MB/s read  ·  ${m.disk_write ?? 0} MB/s write`],
-    ['System RAM', d.system ? `${d.system.mem_used_gb} / ${d.system.mem_total_gb} GB  (${d.system.mem_pct}%)` : '—'],
+    ['Disk I/O', `${m.disk_read ?? 0} <small>R</small> · ${m.disk_write ?? 0} <small>W MB/s</small>`],
+    ['System RAM', sys ? `${sys.mem_used_gb} / ${sys.mem_total_gb} <small>GB · ${sys.mem_pct}%</small>` : '—'],
   ];
-  return `<table class="kv">${rows.map(([k, v]) => `<tr><td class="k">${k}</td><td>${v}</td></tr>`).join('')}</table>`;
+  return (d.adopted ? `<div class="note" style="margin-bottom:12px">${ic('info')}<span>${d.rcon ? 'Reconnected to a running server — commands go via RCON.'
+      : 'Reconnected to a running server — console is read-only. Enable RCON and restart to send commands.'}</span></div>` : '')
+    + `<div class="stats">${cells.map(([k, v]) => `<div class="stat"><span>${k}</span><b>${v}</b></div>`).join('')}</div>`
+    + (d.motd ? `<div class="motd" style="margin-top:10px">“${esc(d.motd)}”</div>` : '')
+    + (t && t.series ? `<div class="muted" style="margin-top:6px">TPS 5s / 10s / 1m / 5m / 15m — ${t.series.join(' · ')}</div>` : '');
 }
 
 async function refreshStatus() {
   const d = await api('/api/server/status');
   lastStatus = d;
-  $('#status-panel').innerHTML = statusPanel(d);
-  const emptyMsg = d.state === 'offline' ? 'No server running.' : '(waiting for output)';
+  const on = d.state !== 'offline';
+  setHTML($('#status-pill'), pill(d.state));
+  setHTML($('#status-panel'), statusPanel(d));
+  $('#stop-btn').hidden = !on;
   renderServerLog();
-  writeLog($('#overview-server-log'), d.log, emptyMsg);
-  const canCmd = d.state !== 'offline' && (!d.adopted || d.rcon);
+  writeLog($('#overview-server-log'), d.log, on ? '(waiting for output)' : 'No server running.');
+  const canCmd = on && (!d.adopted || d.rcon);
   $('#cmd').disabled = !canCmd; $('#cmd-send').disabled = !canCmd;
   $('#cmd').placeholder = (d.adopted && !d.rcon)
     ? 'Read-only console — enable RCON + restart to send commands to a reconnected server'
-    : 'Console command (e.g. say hello)';
+    : on ? 'Console command (e.g. say hello)  ·  ↑↓ history' : 'Start a server to send commands';
   renderPlayersAdmin(d, canCmd);
-  document.querySelectorAll('#quick-actions .qa').forEach(b => b.disabled = !canCmd);
-  $('#backup-now').disabled = d.state === 'offline';
-  const stopBtn = $('#stop-btn');
-  if (stopBtn) stopBtn.onclick = async () => { await api('/api/server/stop', {}); refreshStatus(); };
+  $$('#quick-actions .qa').forEach(b => b.disabled = !canCmd);
+  $('#backup-now').disabled = !on;
   renderOverview();
 }
+$('#stop-btn').onclick = async () => {
+  if (!await ask('Stop the server?', 'Players are disconnected and the world is saved before shutdown.', 'Stop server')) return;
+  await act('/api/server/stop', {}, 'Stopping server…', $('#stop-btn')); refreshStatus();
+};
 
 function renderServerLog() {
   if ($('#log-pause').checked) return;  // frozen
@@ -419,6 +854,7 @@ let cmdHistory = [], histIdx = -1;
 $('#cmd-send').onclick = sendCmd;
 $('#cmd').addEventListener('keydown', e => {
   if (e.key === 'Enter') { sendCmd(); return; }
+  if (e.key === 'Escape') { $('#cmd').blur(); return; }
   if (e.key === 'ArrowUp' && histIdx < cmdHistory.length - 1) {
     histIdx++; $('#cmd').value = cmdHistory[cmdHistory.length - 1 - histIdx]; e.preventDefault();
   } else if (e.key === 'ArrowDown') {
@@ -431,8 +867,8 @@ async function sendCmd() {
   const cmd = $('#cmd').value.trim();
   if (!cmd) return;
   cmdHistory.push(cmd); histIdx = -1;
-  const res = await api('/api/server/command', { cmd });
-  if (res.error) alert(res.error); else $('#cmd').value = '';
+  const r = await act('/api/server/command', { cmd });
+  if (!r.error) { $('#cmd').value = ''; if (r.output) toast(r.output.slice(0, 240)); }
   refreshStatus();
 }
 
@@ -445,12 +881,13 @@ async function refreshBot() {
   lastBot = d;
   const b = $('#bot-badge');
   b.textContent = d.running ? 'running' : 'stopped';
-  b.className = 'badge ' + (d.running ? 'online' : 'offline');
+  b.className = 'pill ' + (d.running ? 'ok' : '');
   if (!botFormDirty) {
     const s = d.settings;
     for (const k of ['CHANNEL_ID','MC_HOST','MC_PORT','POLL_INTERVAL','GUILD_ID'])
       $(`#bot-form [name="${k}"]`).value = s[k] ?? '';
-    $('#token-state').textContent = s.DISCORD_TOKEN_set ? 'set (hidden)' : 'NOT set — add DISCORD_TOKEN to the bot .env';
+    setHTML($('#token-state'), s.DISCORD_TOKEN_set ? '<span class="tag wl">set · hidden</span>'
+      : '<span class="tag ban">not set</span> add DISCORD_TOKEN to the bot .env');
   }
   $('#bot-start').disabled = d.running;
   $('#bot-stop').disabled = !d.running;
@@ -461,91 +898,89 @@ async function refreshBot() {
 $('#bot-save').onclick = async () => {
   const f = $('#bot-form'), body = {};
   for (const k of ['CHANNEL_ID','MC_HOST','MC_PORT','POLL_INTERVAL','GUILD_ID']) body[k] = f[k].value.trim();
-  const res = await api('/api/bot/settings', body);
-  botFormDirty = false;
-  if (res.error) alert(res.error); else refreshBot();
+  const r = await act('/api/bot/settings', body, 'Bot settings saved', $('#bot-save'));
+  if (!r.error) { botFormDirty = false; refreshBot(); }
 };
-$('#bot-start').onclick = async () => { const r = await api('/api/bot/start', {}); if (r.error) alert(r.error); refreshBot(); };
-$('#bot-stop').onclick = async () => { const r = await api('/api/bot/stop', {}); if (r.error) alert(r.error); refreshBot(); };
+$('#bot-start').onclick = async () => { await act('/api/bot/start', {}, 'Bot starting…', $('#bot-start')); refreshBot(); };
+$('#bot-stop').onclick = async () => { await act('/api/bot/stop', {}, 'Bot stopped', $('#bot-stop')); refreshBot(); };
 
 // --- Playit tab ---
 async function refreshPlayit() {
   const d = await api('/api/playit');
   lastPlayit = d;
   const s = d.status || {};
-  $('#playit-address').innerHTML = d.address
-    ? `Join address: <b>${esc(d.address)}</b> <button class="pbtn" onclick="copyText('${d.address}')">copy</button>` : '';
+  setHTML($('#playit-address'), d.address
+    ? `<div class="addr-big"><div><span class="lbl">Join address</span><b>${esc(d.address)}</b></div>
+       <button class="btn sm" data-copy="${esc(d.address)}">${ic('copy')}Copy</button></div>` : '');
   const b = $('#playit-badge');
   b.textContent = s.error ? 'not found' : (s.running ? 'running' : (s.phase || 'stopped'));
-  b.className = 'badge ' + (s.running ? 'online' : 'offline');
-  $('#playit-status').textContent = s.error ? s.error
-    : `Phase: ${s.phase || '—'}  ·  Uptime: ${s.uptime || '—'}  ·  Version: ${s.version || '—'}  ·  Secret: ${s.secret_configured ? 'configured' : 'missing'}`;
+  b.className = 'pill ' + (s.running ? 'ok' : s.error ? 'bad' : '');
+  setHTML($('#playit-status'), s.error ? `<div class="note">${ic('info')}<span>${esc(s.error)}</span></div>`
+    : [['Phase', s.phase || '—'], ['Uptime', s.uptime || '—'], ['Version', s.version || '—'],
+       ['Secret', s.secret_configured ? 'configured' : 'missing']]
+      .map(([k, v]) => `<div><span>${k}</span><b>${esc(v)}</b></div>`).join(''));
   $('#playit-start').disabled = !!s.error || s.running;
   $('#playit-stop').disabled = !!s.error || !s.running;
   writeLog($('#playit-log'), d.log, '(no log output)');
   renderOverview();
 }
-$('#playit-start').onclick = async () => { const r = await api('/api/playit/start', {}); if (r.error) alert(r.error); refreshPlayit(); };
-$('#playit-stop').onclick = async () => { const r = await api('/api/playit/stop', {}); if (r.error) alert(r.error); refreshPlayit(); };
+$('#playit-start').onclick = async () => { await act('/api/playit/start', {}, 'Tunnel starting…', $('#playit-start')); refreshPlayit(); };
+$('#playit-stop').onclick = async () => { await act('/api/playit/stop', {}, 'Tunnel stopped', $('#playit-stop')); refreshPlayit(); };
 
 // --- player admin, quick actions, backups ---
 function renderPlayersAdmin(d, canCmd) {
   const el = $('#players-admin');
   const names = (d.players && d.players.names || []).filter(n => n && n !== 'Anonymous Player');
-  if (d.state === 'offline' || !names.length) { el.innerHTML = ''; return; }
-  const acts = [['kick','Kick',''],['ban','Ban','danger'],['op','Op',''],['whitelist','Whitelist','']];
-  el.innerHTML = `<div class="padmin-title">Online players (${d.players.online})</div>` +
-    names.map(n => `<div class="padmin-row"><span class="pname">${esc(n)}</span>` +
-      acts.map(([a,label,cls]) => `<button class="pbtn ${cls}" data-p="${esc(n)}" data-a="${a}"${canCmd?'':' disabled'}>${label}</button>`).join('') +
-      `</div>`).join('');
+  if (d.state === 'offline' || !names.length) { setHTML(el, ''); return; }
+  const acts = [['kick','Kick',''],['ban','Ban','bad'],['op','Op',''],['whitelist_add','Whitelist','']];
+  setHTML(el, `<div class="sub-h"><span class="lbl">Online now</span><em class="count">${d.players.online}</em></div>` +
+    names.map(n => `<div class="prow">${avatar(n, 'sm')}<span class="pname">${esc(n)}</span>` +
+      acts.map(([a, label, cls]) => `<button class="btn xs ${cls}" data-p="${esc(n)}" data-a="${a}"${canCmd ? '' : ' disabled'}>${label}</button>`).join('') +
+      `</div>`).join(''));
 }
 $('#players-admin').addEventListener('click', async e => {
   const b = e.target.closest('button[data-a]');
   if (!b) return;
   const name = b.dataset.p, action = b.dataset.a;
-  if ((action === 'ban' || action === 'kick') && !confirm(`${action} ${name}?`)) return;
-  const r = await api('/api/server/player', { name, action });
-  if (r.error) alert(r.error);
+  if ((action === 'ban' || action === 'kick') && !await ask(`${cap(action)} ${name}?`, 'They are disconnected from the server immediately.', cap(action))) return;
+  await act('/api/server/player', { name, action }, `${action.replace('_add', '')}: ${name}`, b);
   refreshStatus();
 });
-document.querySelectorAll('#quick-actions .qa[data-cmd]').forEach(b => {
-  b.onclick = async () => { const r = await api('/api/server/command', { cmd: b.dataset.cmd }); if (r.error) alert(r.error); };
+$$('#quick-actions .qa[data-cmd]').forEach(b => {
+  b.onclick = () => act('/api/server/command', { cmd: b.dataset.cmd }, `Sent: ${b.dataset.cmd}`, b);
 });
 $('#stop-countdown').onclick = async () => {
-  if (!confirm('Warn players and stop the server in 30 seconds?')) return;
-  const r = await api('/api/server/stop-countdown', {}); if (r.error) alert(r.error);
+  if (!await ask('Stop with a 30s warning?', 'Players get a countdown in chat, then the server saves and stops.', 'Start countdown')) return;
+  act('/api/server/stop-countdown', {}, 'Countdown started — stopping in 30s');
 };
 $('#backup-now').onclick = async () => {
-  const r = await api('/api/server/backup', {}); if (r.error) alert(r.error); refreshBackup();
+  await act('/api/server/backup', {}, 'Backup started', $('#backup-now')); refreshBackup();
 };
 async function refreshBackup() {
   const d = await api('/api/backup'); const s = d.status || {};
-  $('#backup-status').textContent =
-    s.state === 'running' ? 'backing up…' :
-    s.state === 'done' ? `last: ${s.file} (${s.size_mb} MB)${s.skipped ? ` — ${s.skipped} files skipped (locked)` : ''}` :
-    s.state === 'error' ? 'backup error: ' + (s.error || '') : '';
-  $('#backup-list').innerHTML = (d.files && d.files.length)
-    ? 'Backups: ' + d.files.map(f => `${esc(f.name)} (${f.size_mb} MB)`).join(' · ') : '';
+  setHTML($('#backup-status'),
+    s.state === 'running' ? '<span class="spin"></span> Backing up…' :
+    s.state === 'done' ? `Last: ${esc(s.file)} · ${s.size_mb} MB${s.skipped ? ` · ${s.skipped} locked files skipped` : ''}` :
+    s.state === 'error' ? `<span style="color:#ff8080">Backup failed: ${esc(s.error || '')}</span>` : '');
+  setHTML($('#backup-list'), (d.files && d.files.length)
+    ? d.files.map(f => `<div class="brow">${ic('archive')}<span>${esc(f.name)}</span><small>${f.size_mb} MB</small></div>`).join('')
+    : '<div class="empty sm">No backups yet.</div>');
 }
 
 // --- header actions ---
 $('#start-all').onclick = async () => {
-  const r = await api('/api/start-all', {});
-  if (r.error) { alert(r.error); return; }
-  if (r.result && /^no server/.test(r.result.server || ''))
-    alert('Started bot + playit. No saved server yet — start one on the MC Server tab first.');
+  const r = await act('/api/start-all', {}, null, $('#start-all'));
+  if (r.result) toast(`Server: ${r.result.server} · Bot: ${r.result.bot} · Tunnel: ${r.result.playit}`);
   refreshServers(); tick();
 };
 $('#stop-mc').onclick = async () => {
-  if (!confirm('Stop the Minecraft server and playit tunnel? (the Discord bot stays running)')) return;
-  const r = await api('/api/stop-server-playit', {});
-  if (r.error) alert(r.error);
+  if (!await ask('Stop server + tunnel?', 'The Minecraft server saves and stops and the playit tunnel goes down. The Discord bot keeps running.', 'Stop both')) return;
+  await act('/api/stop-server-playit', {}, 'Stopping server and tunnel…', $('#stop-mc'));
   refreshServers(); tick();
 };
 $('#stop-all').onclick = async () => {
-  if (!confirm('Stop the Minecraft server, Discord bot, and playit tunnel?')) return;
-  const r = await api('/api/stop-all', {});
-  if (r.error) alert(r.error);
+  if (!await ask('Stop everything?', 'Stops the Minecraft server, the Discord bot, and the playit tunnel.', 'Stop all')) return;
+  await act('/api/stop-all', {}, 'Stopping everything…', $('#stop-all'));
   refreshServers(); tick();
 };
 
@@ -558,9 +993,10 @@ const PROP_FIELDS = [
   ['white-list','bool'], ['allow-nether','bool'], ['allow-flight','bool'],
   ['enable-command-block','bool'],
 ];
+let cfgMods = [];
 async function loadConfigServers() {
   const { servers } = await api('/api/servers');
-  const sel = $('#cfg-server'), cur = sel.value;
+  const sel = $('#cfg-server'), cur = sel.value || running;
   sel.innerHTML = servers.map(s => `<option>${esc(s.name)}</option>`).join('');
   if (cur && servers.some(s => s.name === cur)) sel.value = cur;
 }
@@ -569,111 +1005,123 @@ async function loadRoot() {
   if (d.servers_root) $('#cfg-root').value = d.servers_root;
 }
 $('#cfg-root-browse').onclick = async () => {
-  const r = await api('/api/pick-folder', {});
-  if (r.error) { alert(r.error); return; }
+  const r = await act('/api/pick-folder', {});
   if (r.path) $('#cfg-root').value = r.path;
 };
 $('#cfg-root-save').onclick = async () => {
-  const r = await api('/api/settings', { servers_root: $('#cfg-root').value.trim() });
-  if (r.error) { alert(r.error); return; }
-  const b = $('#cfg-root-save');
-  b.textContent = `Saved ✓ (${r.count} servers)`; setTimeout(() => b.textContent = 'Save', 2000);
+  const r = await act('/api/settings', { servers_root: $('#cfg-root').value.trim() }, null, $('#cfg-root-save'));
+  if (r.error) return;
+  toast(`Saved — found ${r.count} server${r.count === 1 ? '' : 's'}`);
   refreshServers(); loadConfigServers().then(loadConfig);
 };
 async function loadConfig() {
   const name = $('#cfg-server').value;
   if (!name) return;
   const d = await api('/api/server/config?name=' + encodeURIComponent(name));
-  if (d.error) { alert(d.error); return; }
-  $('#cfg-running').textContent = d.running
-    ? '⚠ running — properties changes apply on restart and may be overwritten when it stops' : '';
+  if (d.error) { toast(d.error, 'err'); return; }
+  setHTML($('#cfg-running'), d.running
+    ? `${ic('info')}<span>This server is running — property changes apply on restart and may be overwritten when it stops. Edit while stopped.</span>` : '');
   const p = d.properties || {};
-  $('#cfg-props').innerHTML = PROP_FIELDS.map(([k, t]) => {
+  const label = k => ({ motd: 'MOTD', pvp: 'PvP' })[k] || cap(k.replace(/-/g, ' '));
+  const fields = [], switches = [];
+  for (const [k, t] of PROP_FIELDS) {
     const v = p[k] ?? '';
-    let input;
     if (t === 'bool')
-      input = `<select name="${k}"><option${v==='true'?' selected':''}>true</option><option${v!=='true'?' selected':''}>false</option></select>`;
+      switches.push(`<label class="field sw" title="${k}"><span>${label(k)}</span><input type="checkbox" class="switch" name="${k}"${v === 'true' ? ' checked' : ''}></label>`);
     else if (t.startsWith('select:'))
-      input = `<select name="${k}">` + t.slice(7).split(',').map(o => `<option${o===v?' selected':''}>${o}</option>`).join('') + `</select>`;
+      fields.push(`<label class="field" title="${k}"><span>${label(k)}</span><select name="${k}">` + t.slice(7).split(',').map(o => `<option${o === v ? ' selected' : ''}>${o}</option>`).join('') + `</select></label>`);
     else
-      input = `<input name="${k}" type="${t==='number'?'number':'text'}" value="${esc(String(v))}">`;
-    return `<label>${k}</label>${input}`;
-  }).join('');
+      fields.push(`<label class="field" title="${k}"${k === 'motd' ? ' style="grid-column:1/-1"' : ''}><span>${label(k)}</span><input name="${k}" type="${t === 'number' ? 'number' : 'text'}" value="${esc(v)}"></label>`);
+  }
+  $('#cfg-props').innerHTML = `<div class="fields">${fields.join('')}</div><div class="fields">${switches.join('')}</div>`;
   $('#cfg-mem [name=xmx]').value = (d.mem && d.mem.xmx) || '';
   $('#cfg-mem [name=xms]').value = (d.mem && d.mem.xms) || '';
-  $('#cfg-mod-count').textContent = (d.mods || []).length;
-  $('#cfg-mods').textContent = (d.mods || []).length ? d.mods.join('\n') : 'No mods folder / no jars.';
+  cfgMods = d.mods || [];
+  $('#cfg-mod-count').textContent = cfgMods.length;
+  renderMods();
 }
+function renderMods() {
+  const q = $('#cfg-mod-filter').value.trim().toLowerCase();
+  const list = q ? cfgMods.filter(m => m.toLowerCase().includes(q)) : cfgMods;
+  $('#cfg-mods').innerHTML = list.length ? list.map(m => `<div title="${esc(m)}">${esc(m)}</div>`).join('')
+    : `<div class="empty sm">${cfgMods.length ? 'No match.' : 'No mods folder / no jars.'}</div>`;
+}
+$('#cfg-mod-filter').oninput = renderMods;
 $('#cfg-server').onchange = loadConfig;
-$('#cfg-props-save').onclick = async () => {
+$('#cfg-props-save').onclick = () => {
   const updates = {};
-  $('#cfg-props').querySelectorAll('[name]').forEach(el => updates[el.name] = el.value);
-  const r = await api('/api/server/properties', { name: $('#cfg-server').value, updates });
-  const b = $('#cfg-props-save');
-  if (r.error) alert(r.error); else { b.textContent = 'Saved ✓'; setTimeout(() => b.textContent = 'Save properties', 1500); }
+  $('#cfg-props').querySelectorAll('[name]').forEach(el => updates[el.name] = el.type === 'checkbox' ? String(el.checked) : el.value);
+  act('/api/server/properties', { name: $('#cfg-server').value, updates }, 'server.properties saved', $('#cfg-props-save'));
 };
-$('#cfg-mem-save').onclick = async () => {
-  const r = await api('/api/server/memory', {
-    name: $('#cfg-server').value, xmx: $('#cfg-mem [name=xmx]').value, xms: $('#cfg-mem [name=xms]').value });
-  const b = $('#cfg-mem-save');
-  if (r.error) alert(r.error); else { b.textContent = 'Saved ✓'; setTimeout(() => b.textContent = 'Save memory', 1500); }
-};
+$('#cfg-mem-save').onclick = () => act('/api/server/memory', {
+  name: $('#cfg-server').value, xmx: $('#cfg-mem [name=xmx]').value, xms: $('#cfg-mem [name=xms]').value },
+  'Memory settings saved', $('#cfg-mem-save'));
 
 // --- history + alerts ---
-function sparkline(vals, color, w = 200, h = 40) {
+function sparkline(vals, color, w = 300, h = 56) {
   const nums = vals.filter(v => v != null);
-  if (nums.length < 2) return '<div class="muted">collecting…</div>';
+  if (nums.length < 2) return '<div class="spark empty sm">collecting…</div>';
   const min = Math.min(...nums), max = Math.max(...nums), span = (max - min) || 1, n = vals.length;
   const pts = vals.map((v, i) => v == null ? null
-    : `${(i / (n - 1) * w).toFixed(1)},${(h - (v - min) / span * (h - 4) - 2).toFixed(1)}`).filter(Boolean).join(' ');
-  return `<svg width="100%" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><polyline fill="none" stroke="${color}" stroke-width="1.5" points="${pts}"/></svg>`;
+    : `${(i / (n - 1) * w).toFixed(1)},${(h - (v - min) / span * (h - 6) - 3).toFixed(1)}`).filter(Boolean);
+  const x0 = pts[0].split(',')[0], x1 = pts.at(-1).split(',')[0], id = 'sg' + color.replace(/\W/g, '');
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+    <defs><linearGradient id="${id}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${color}" stop-opacity=".32"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>
+    <path d="M${x0},${h} L${pts.join(' L')} L${x1},${h}Z" fill="url(#${id})"/>
+    <polyline fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round" vector-effect="non-scaling-stroke" points="${pts.join(' ')}"/></svg>`;
 }
+const fmt = v => Math.round(v * 10) / 10;
 async function refreshHistory() {
   const hist = (await api('/api/history')).history || [];
   const el = $('#history');
-  if (!hist.length) { el.innerHTML = '<span class="muted">Collecting… (keep a server running)</span>'; return; }
+  if (!hist.length) { setHTML(el, '<div class="empty sm">Collecting… keep a server running to build history.</div>'); return; }
   const series = [
-    ['CPU %', hist.map(p => p.cpu), '#7aa2f7'],
-    ['RAM MB', hist.map(p => p.mem_mb), '#7ee2a0'],
-    ['Players', hist.map(p => p.players), '#ffd479'],
-    ['TPS', hist.map(p => p.tps), '#c792ea'],
+    ['CPU', '%', hist.map(p => p.cpu), '#6ea8ff'],
+    ['RAM', 'GB', hist.map(p => p.mem_mb != null ? p.mem_mb / 1024 : null), '#b18cff'],
+    ['Players', '', hist.map(p => p.players), '#f5b945'],
+    ['TPS', '', hist.map(p => p.tps), '#3ddc84'],
   ];
-  el.innerHTML = series.map(([label, vals, color]) => {
-    const last = [...vals].reverse().find(v => v != null);
-    return `<div class="tile"><div class="tile-k">${label}</div><div class="big">${last != null ? last : '—'}</div>${sparkline(vals, color)}</div>`;
-  }).join('');
+  setHTML(el, series.map(([label, unit, vals, color]) => {
+    const nums = vals.filter(v => v != null), last = nums.at(-1);
+    return `<div class="chart"><div class="chart-h"><span class="lbl">${label}</span><b>${last != null ? fmt(last) : '—'}<small>${unit}</small></b></div>
+      ${sparkline(vals, color)}<div class="chart-f">${nums.length ? `min ${fmt(Math.min(...nums))} · max ${fmt(Math.max(...nums))}` : '&nbsp;'}</div></div>`;
+  }).join(''));
 }
 async function refreshAlerts() {
   const a = (await api('/api/alerts')).alerts || [];
-  $('#alerts').innerHTML = a.length
-    ? a.slice(-10).reverse().map(x => `<div><span class="${x.level === 'error' ? 'a-err' : 'a-warn'}">${new Date(x.at * 1000).toLocaleTimeString()}</span> ${esc(x.text)}</div>`).join('')
-    : 'No alerts.';
+  setHTML($('#alerts'), a.length
+    ? a.slice(-15).reverse().map(x => `<div class="alert ${x.level === 'error' ? 'bad' : ''}"><i></i><div><div>${esc(x.text)}</div>
+        <small title="${new Date(x.at * 1000).toLocaleString()}">${ago(x.at)}</small></div></div>`).join('')
+    : '<div class="empty sm">All quiet — no alerts.</div>');
 }
 
 // --- players tab ---
 let lastPlayers = null, playerFilter = 'all', currentPlayer = null;
 async function refreshPlayers() {
   const d = await api('/api/players'); lastPlayers = d;
-  $('#players-note').textContent = d.server_running ? ''
-    : 'Server offline — lists are read-only; start it to manage players.';
+  setHTML($('#players-note'), d.server_running ? '' : `${ic('info')}<span>Server offline — lists are read-only; start it to manage players.</span>`);
   $('#banned-ips').textContent = (d.banned_ips && d.banned_ips.length) ? 'Banned IPs: ' + d.banned_ips.join(', ') : '';
   renderPlayersGrid();
 }
 function renderPlayersGrid() {
   const d = lastPlayers; if (!d) return;
+  const q = $('#player-search').value.trim().toLowerCase();
   let list = d.players;
   if (playerFilter === 'online') list = list.filter(p => p.online);
   else if (playerFilter !== 'all') list = list.filter(p => p[playerFilter]);
-  const tag = (on, label, cls) => on ? `<span class="badge ${cls}">${label}</span>` : '';
-  $('#players-grid').innerHTML = list.length ? list.map(p =>
-    `<div class="tile pcard" data-name="${esc(p.name)}"><div class="big" style="font-size:15px">${esc(p.name)}</div>
-     <div class="muted" style="margin-top:4px">${[tag(p.online,'online','online'),tag(p.opped,'op','tag'),tag(p.whitelisted,'wl','tag'),tag(p.banned,'ban','offline')].join(' ') || '&nbsp;'}</div></div>`
-  ).join('') : '<span class="muted">No players.</span>';
+  if (q) list = list.filter(p => p.name.toLowerCase().includes(q));
+  list = [...list].sort((a, b) => b.online - a.online);  // online first, then A–Z
+  $('#players-count').textContent = list.length;
+  setHTML($('#players-grid'), list.length ? list.map(p =>
+    `<button class="pcard${p.name === currentPlayer ? ' sel' : ''}" data-name="${esc(p.name)}">${avatar(p.name, p.online ? 'on' : '')}
+     <span class="pn">${esc(p.name)}</span><span class="tags">${p.opped ? '<i class="tag op">op</i>' : ''}${p.whitelisted ? '<i class="tag wl">wl</i>' : ''}${p.banned ? '<i class="tag ban">ban</i>' : ''}</span></button>`
+  ).join('') : `<div class="empty sm">${q ? 'No match.' : 'No players.'}</div>`);
 }
-document.querySelectorAll('#player-filters .pf').forEach(b => {
+$('#player-search').oninput = renderPlayersGrid;
+$$('#player-filters .pf').forEach(b => {
   b.onclick = () => {
     playerFilter = b.dataset.f;
-    document.querySelectorAll('#player-filters .pf').forEach(x => x.classList.toggle('active-f', x === b));
+    $$('#player-filters .pf').forEach(x => x.classList.toggle('active-f', x === b));
     renderPlayersGrid();
   };
 });
@@ -681,15 +1129,17 @@ $('#players-grid').addEventListener('click', e => {
   const c = e.target.closest('.pcard'); if (c) openPlayer(c.dataset.name);
 });
 async function openPlayer(name) {
-  currentPlayer = name;
+  const el = $('#player-detail');
+  if (name !== currentPlayer) el.innerHTML = '<div class="empty"><span class="spin"></span></div>';
+  currentPlayer = name; renderPlayersGrid();
   const d = await api('/api/server/player?name=' + encodeURIComponent(name));
-  if (d.error) { alert(d.error); return; }
+  if (d.error) { toast(d.error, 'err'); el.innerHTML = `<div class="empty">${esc(d.error)}</div>`; return; }
+  if (currentPlayer !== name) return;  // user clicked someone else meanwhile
   const running = !!(lastPlayers && lastPlayers.server_running);
-  const el = $('#player-detail'); el.hidden = false;
   el.innerHTML = playerDetailHtml(d, running);
-  el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   if (d.online || d.has_data) {
     const inv = await api('/api/server/player/inventory?name=' + encodeURIComponent(name));
+    if (currentPlayer !== name) return;
     const box = $('#pd-inv');
     if (box) {
       if (inv && inv.items && inv.items.length) renderInventory(box, inv.items);
@@ -766,6 +1216,7 @@ function renderInventory(box, items) {
 function renderEnder(box, items) {
   const by = {}; items.forEach(it => { by[it.slot] = it; });
   const row = arr => `<div class="inv-row">${arr.map(s => slotHtml(by[s])).join('')}</div>`;
+  box.className = 'mcpanel';
   box.innerHTML = `<div class="inv-main">
     ${row([0, 1, 2, 3, 4, 5, 6, 7, 8])}
     ${row([9, 10, 11, 12, 13, 14, 15, 16, 17])}
@@ -788,24 +1239,20 @@ function vitalPips(value, kind, icons) {
   }
   return `<span class="pips" title="${raw} / 20">${pips}</span>`;
 }
-function xpBar(progress, icons) {
-  const pct = Math.max(0, Math.min(1, progress || 0)) * 100;
-  return icons
-    ? `<span class="xp-bg"><span class="xp-fg" style="width:${pct}%"></span></span>`
-    : `<span class="xp-cssbar"><span class="xp-cssfill" style="width:${pct}%"></span></span>`;
-}
 function playerDetailHtml(d, running) {
   const dis = running ? '' : ' disabled';                 // op/whitelist/ban act on the name, work offline
   const edis = (running && d.online) ? '' : ' disabled';  // live-entity actions need the player loaded
   const f = d.flags || {};
-  let vitals = '<div class="muted">No saved data for this player yet — stats and inventory appear once they have joined the server.</div>';
+  const tags = [f.opped && '<i class="tag op">operator</i>', f.whitelisted && '<i class="tag wl">whitelisted</i>',
+                f.banned && '<i class="tag ban">banned</i>'].filter(Boolean).join('');
+  let body = `<div class="empty">${ic('users')}<div>No saved data for this player yet — stats and inventory appear once they have joined the server.</div></div>`;
   if (d.online || d.has_data) {
     const p = d.pos, gms = ['survival', 'creative', 'adventure', 'spectator'];
     const pct = Math.max(0, Math.min(1, d.xp_progress || 0)) * 100;
     const offNote = d.online ? '' :
-      '<div class="muted" style="margin-bottom:8px">Offline — showing last-saved data; kill/heal/feed, gamemode and teleport need the player online.</div>';
-    vitals = `${offNote}<div class="he-inv">
-      <div class="he">
+      `<div class="note" style="margin-bottom:14px">${ic('info')}<span>Offline — showing last-saved data. Kill/heal/feed, gamemode and teleport need the player online.</span></div>`;
+    body = `${offNote}<div class="he-inv">
+      <div class="he mcpanel">
         <div class="xp-level">Level ${d.level != null ? Math.round(d.level) : '?'}</div>
         <div class="xp-track"><div class="xp-prog" style="width:${pct}%"></div></div>
         <div class="he-row">
@@ -818,49 +1265,58 @@ function playerDetailHtml(d, running) {
           <div class="he-icons">${vitalPips(d.food, 'food', d.icons)}</div>
           <button class="he-btn heal pa" data-a="feed"${edis}>🍗 Feed</button>
         </div>
+        <div class="vitals">
+          <div class="vrow"><span class="lbl">Gamemode</span><select id="pd-gm"${edis}>${gms.map(m => `<option${m === d.gamemode ? ' selected' : ''}>${m}</option>`).join('')}</select></div>
+          <div class="vrow"><span class="lbl">Position</span><span style="font-family:var(--mono);font-size:12.5px">${p ? `${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)} · ${esc((d.dimension || '').replace('minecraft:', ''))}` : '—'}</span></div>
+          <div class="vrow"><span class="lbl">Teleport</span><input id="pd-x" placeholder="X"><input id="pd-y" placeholder="Y"><input id="pd-z" placeholder="Z"><button class="btn sm" id="pd-tp"${edis}>Go</button></div>
+        </div>
       </div>
       <div class="pd-inv-col">
-        <div class="vlabel" style="margin-bottom:6px">Inventory</div>
-        <div id="pd-inv" class="muted">Loading inventory…</div>
-        <div class="vlabel" id="pd-ender-label" style="margin:12px 0 6px;display:none">Ender Chest</div>
+        <div class="lbl">Inventory</div>
+        <div id="pd-inv" class="mcpanel muted">Loading inventory…</div>
+        <div class="lbl" id="pd-ender-label" style="display:none">Ender chest</div>
         <div id="pd-ender"></div>
       </div>
-    </div>
-    <div class="vitals">
-      <div class="vrow"><span class="vlabel">Gamemode</span><select id="pd-gm"${edis}>${gms.map(m => `<option${m === d.gamemode ? ' selected' : ''}>${m}</option>`).join('')}</select></div>
-      <div class="vrow"><span class="vlabel">Position</span><span>${p ? `${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)} · ${(d.dimension || '').replace('minecraft:', '')}` : '—'}</span></div>
-      <div class="vrow"><span class="vlabel">Teleport</span><input id="pd-x" placeholder="X" style="width:74px"><input id="pd-y" placeholder="Y" style="width:74px"><input id="pd-z" placeholder="Z" style="width:74px"><button class="act" id="pd-tp"${edis}>Go</button></div>
     </div>`;
   }
-  return `<h2>${esc(d.name)} <span class="badge ${d.online ? 'online' : 'offline'}">${d.online ? 'online' : 'offline'}</span></h2>
-    ${vitals}
-    <div class="row" style="flex-wrap:wrap;margin-top:10px">
-      <button class="act pa" data-a="${f.opped ? 'deop' : 'op'}"${dis}>${f.opped ? 'De-op' : 'Op'}</button>
-      <button class="act pa" data-a="${f.whitelisted ? 'whitelist_remove' : 'whitelist_add'}"${dis}>${f.whitelisted ? 'Un-whitelist' : 'Whitelist'}</button>
-      <button class="act danger pa" data-a="${f.banned ? 'pardon' : 'ban'}"${dis}>${f.banned ? 'Unban' : 'Ban'}</button>
-      <button class="act danger pa" data-a="kick"${edis}>Kick</button>
-    </div>`;
+  return `<div class="pd-h">${avatar(d.name, 'lg' + (d.online ? ' on' : ''))}
+      <div><h2>${esc(d.name)}</h2><div class="tags">${pill(d.online ? 'online' : 'offline')}${tags}</div></div>
+      <div class="end" style="flex-wrap:wrap">
+        <button class="btn sm pa" data-a="${f.opped ? 'deop' : 'op'}"${dis}>${f.opped ? 'De-op' : 'Op'}</button>
+        <button class="btn sm pa" data-a="${f.whitelisted ? 'whitelist_remove' : 'whitelist_add'}"${dis}>${f.whitelisted ? 'Un-whitelist' : 'Whitelist'}</button>
+        <button class="btn sm bad pa" data-a="kick"${edis}>Kick</button>
+        <button class="btn sm bad pa" data-a="${f.banned ? 'pardon' : 'ban'}"${dis}>${f.banned ? 'Unban' : 'Ban'}</button>
+        <button class="btn sm icon ghost" id="pd-refresh" title="Refresh">${ic('refresh')}</button>
+      </div></div>${body}`;
 }
-async function _playerAction(body) {
-  const r = await api('/api/server/player', body);
-  if (r.error) alert(r.error);
+async function _playerAction(body, btn) {
+  const r = await act('/api/server/player', body, null, btn);
+  if (!r.error) toast(`${body.action.replace('_', ' ')} · ${body.name}`);
   if (currentPlayer) openPlayer(currentPlayer);
   refreshPlayers();
 }
-$('#player-detail').addEventListener('click', e => {
+$('#player-detail').addEventListener('click', async e => {
   const b = e.target.closest('button'); if (!b || !currentPlayer) return;
-  if (b.id === 'pd-tp') { _playerAction({ name: currentPlayer, action: 'tp', x: $('#pd-x').value, y: $('#pd-y').value, z: $('#pd-z').value }); return; }
+  if (b.id === 'pd-refresh') { openPlayer(currentPlayer); return; }
+  if (b.id === 'pd-tp') { _playerAction({ name: currentPlayer, action: 'tp', x: $('#pd-x').value, y: $('#pd-y').value, z: $('#pd-z').value }, b); return; }
   const a = b.dataset.a; if (!a) return;
-  if (['ban', 'kick', 'kill'].includes(a) && !confirm(`${a} ${currentPlayer}?`)) return;
-  _playerAction({ name: currentPlayer, action: a });
+  if (['ban', 'kick', 'kill'].includes(a) && !await ask(`${cap(a)} ${currentPlayer}?`,
+      a === 'kill' ? 'Their inventory drops where they stand.' : 'They are disconnected from the server immediately.', cap(a))) return;
+  _playerAction({ name: currentPlayer, action: a }, b);
 });
 $('#player-detail').addEventListener('change', e => {
   if (e.target.id === 'pd-gm') _playerAction({ name: currentPlayer, action: 'gamemode', mode: e.target.value });
 });
 
 // --- poll ---
-function tick() { refreshStatus(); refreshBot(); refreshPlayit(); refreshBackup(); refreshHistory(); refreshAlerts(); }
-refreshServers(); tick();
+function tick() {
+  refreshStatus(); refreshBot(); refreshPlayit(); refreshBackup(); refreshHistory(); refreshAlerts();
+  if (curTab === 'players') refreshPlayers();
+}
+let initTab = 'overview';
+try { if (TABS.includes(localStorage.tab)) initTab = localStorage.tab; } catch (e) {}
+show(initTab);
+tick(); refreshStatus().then(refreshServers);  // status first so the running row shows the real state
 setInterval(() => { refreshServers(); tick(); }, 2000);
 </script>
 </body>
