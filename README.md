@@ -121,6 +121,10 @@ no console window. Double-click it, or right-click it → **Pin to Start** / **P
 reads `config.json` / `state.json` from the folder it sits in, so keep them next to it if you move
 it. Opening it while it's already running just opens another window onto the running instance.
 
+If Windows **Smart App Control** blocks the unsigned `.exe`, run `shortcut.bat` instead: it adds a
+**Minecraft Dashboard** Start Menu shortcut that launches `app.py` through the signed `pyw.exe`
+(same window, no console, pinnable).
+
 To run from source instead (development), `run.bat` installs deps and opens the app window.
 Flask is bound to `127.0.0.1` only (not network-reachable). To open in a browser instead (debugging):
 
